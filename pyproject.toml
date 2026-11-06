@@ -1,0 +1,65 @@
+[project]
+name = "issue-triage-agent"
+version = "0.1.0"
+description = "A LangGraph agent that triages GitHub issues: labels, milestone, duplicates and regressions"
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Joe Luo", email = "sonicjoy2002@hotmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "agent-flight-recorder",
+    "langgraph>=1.2.20",
+    "pydantic>=2.12",
+    "pyyaml>=6.0.3",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+triager = "issue_triager.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "issue_triager"
+
+[tool.uv.sources]
+agent-flight-recorder = { git = "https://github.com/sonicjoy/agent-flight-recorder", branch = "main" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes
+    "I",       # isort
+    "UP",      # pyupgrade
+    "B",       # bugbear
+    "SIM",     # simplify
+    "RUF",     # ruff-specific
+]
+
+[tool.pyright]
+include = ["src", "tests", "scripts"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"  # LangGraph's types are incomplete; strict is mostly noise
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.7.0",
+    "pyright[nodejs]>=1.1.414",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+    "types-pyyaml>=6.0.12.20261103",
+]
