@@ -1,5 +1,7 @@
-"""The triager's tools. They read the committed fixtures only; nothing touches GitHub.
+"""The triager's tools. They read the dataset only; nothing touches GitHub.
 
+`IssueTools` holds the logic once; `make_tools` (LangChain) and `agents_sdk.py` (OpenAI
+Agents SDK) wrap it, so every version of the agent gets the same tools and descriptions.
 `FailureInjector` breaks tool calls on purpose, so the recorder sees errors the
 agent has to cope with.
 """
@@ -76,49 +78,86 @@ def _corrupt(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class ToolError(Exception):
+    """A tool failure the agent should see, the way a real API reports one."""
+
+
+SEARCH_DESCRIPTION = (
+    "Keyword search over this repo's existing issues. Returns up to 5 matches as JSON, "
+    "each with its id, title, status, labels, milestone and the start of its body. "
+    "Use specific words; there is no synonym matching."
+)
+GET_DESCRIPTION = 'Fetch one existing issue in full by id (for example "7"), as JSON.'
+
+
+class IssueTools:
+    """The two tools, free of any agent framework. Each framework wraps these methods.
+
+    They read `corpus` (real issues) only. The issue being triaged is never visible.
+    """
+
+    def __init__(
+        self,
+        corpus: Sequence[TriageCase],
+        *,
+        target_id: str,
+        injector: FailureInjector | None = None,
+    ) -> None:
+        self.target_id = target_id
+        self.index = KeywordIndex(corpus)
+        self.by_id = {c.id: c for c in corpus if c.id != target_id}
+        self.inject = injector or FailureInjector()
+
+    def search_issues(self, query: str) -> str:
+        mode = self.inject.pick("search_issues")
+        if mode == "timeout":
+            raise ToolError("search_issues timed out after 30s")
+        if mode == "empty":
+            return "[]"
+        if mode == "noise":
+            hits = self.inject.shuffle(list(self.by_id.values()))[:5]
+        else:
+            hits = [case for case, _ in self.index.search(query, exclude=self.target_id)]
+        items = [summarise(c) for c in hits]
+        if mode == "bad-data":
+            items = [_corrupt(i) for i in items]
+        return json.dumps(items, ensure_ascii=False)
+
+    def get_issue(self, issue_id: str) -> str:
+        mode = self.inject.pick("get_issue")
+        if mode == "timeout":
+            raise ToolError("get_issue timed out after 30s")
+        case = self.by_id.get(issue_id.lstrip("#"))
+        if case is None or mode == "empty":
+            raise ToolError(f"issue {issue_id} not found")
+        if mode == "noise":
+            case = self.inject.shuffle(list(self.by_id.values()))[0]
+        item = summarise(case, full=True)
+        return json.dumps(_corrupt(item) if mode == "bad-data" else item, ensure_ascii=False)
+
+
 def make_tools(
     corpus: Sequence[TriageCase],
     *,
     target_id: str,
     injector: FailureInjector | None = None,
 ) -> list[BaseTool]:
-    """Tools over `corpus` (real issues). The issue being triaged is never visible."""
-    index = KeywordIndex(corpus)
-    by_id = {c.id: c for c in corpus if c.id != target_id}
-    inject = injector or FailureInjector()
+    """The tools as LangChain tools, for the LangGraph agent."""
+    core = IssueTools(corpus, target_id=target_id, injector=injector)
 
-    @tool
+    @tool(description=SEARCH_DESCRIPTION)
     def search_issues(query: str) -> str:
-        """Keyword search over this repo's existing issues. Returns up to 5 matches as JSON,
-        each with its id, title, status, labels, milestone and the start of
-        its body. Use specific words; there is no synonym matching."""
-        mode = inject.pick("search_issues")
-        if mode == "timeout":
-            raise ToolException("search_issues timed out after 30s")
-        if mode == "empty":
-            return "[]"
-        if mode == "noise":
-            hits = inject.shuffle(list(by_id.values()))[:5]
-        else:
-            hits = [case for case, _ in index.search(query, exclude=target_id)]
-        items = [summarise(c) for c in hits]
-        if mode == "bad-data":
-            items = [_corrupt(i) for i in items]
-        return json.dumps(items, ensure_ascii=False)
+        try:
+            return core.search_issues(query)
+        except ToolError as error:
+            raise ToolException(str(error)) from error
 
-    @tool
+    @tool(description=GET_DESCRIPTION)
     def get_issue(issue_id: str) -> str:
-        """Fetch one existing issue in full by id (for example "7"), as JSON."""
-        mode = inject.pick("get_issue")
-        if mode == "timeout":
-            raise ToolException("get_issue timed out after 30s")
-        case = by_id.get(issue_id.lstrip("#"))
-        if case is None or mode == "empty":
-            raise ToolException(f"issue {issue_id} not found")
-        if mode == "noise":
-            case = inject.shuffle(list(by_id.values()))[0]
-        item = summarise(case, full=True)
-        return json.dumps(_corrupt(item) if mode == "bad-data" else item, ensure_ascii=False)
+        try:
+            return core.get_issue(issue_id)
+        except ToolError as error:
+            raise ToolException(str(error)) from error
 
     for t in (search_issues, get_issue):
         t.handle_tool_error = True  # the agent sees the error message, as with a real API
