@@ -1,7 +1,7 @@
 [project]
 name = "issue-triage-agent"
 version = "0.1.0"
-description = "A LangGraph agent that triages GitHub issues: labels, milestone, duplicates and regressions"
+description = "An AI agent that triages GitHub issues (labels, milestone, duplicates, regressions), built with LangGraph and the OpenAI Agents SDK"
 readme = "README.md"
 license = "MIT"
 authors = [
@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
     "agent-flight-recorder",
     "langgraph>=1.2.20",
+    "openai-agents>=0.24.0",
     "pydantic>=2.12",
     "pyyaml>=6.0.3",
     "typer>=0.27.3",

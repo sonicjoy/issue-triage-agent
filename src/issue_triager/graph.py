@@ -15,7 +15,6 @@ import json
 import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, TypedDict
 
@@ -30,6 +29,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
+from issue_triager.apply import write_dry_run
 from issue_triager.dataset import Dataset, TriageCase, TriageInput
 from issue_triager.decision import TriageDecision, decision_model
 from issue_triager.prompts import COMMENT_SYSTEM, triage_request, triage_system
@@ -183,10 +183,8 @@ def build_graph(
 
     def apply(state: TriageState) -> Update:
         """Dry run: write what would be applied to a local file. Nothing goes to GitHub."""
-        runs_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        path = runs_dir / f"triage-{case.id}-{stamp}.json"
         record = {
+            "engine": "langgraph",
             "repo": dataset.repo.repo,
             "case_id": case.id,
             "models": {"triage": models.triage_spec, "comment": models.comment_spec},
@@ -197,7 +195,7 @@ def build_graph(
             "injected_failures": injector.injected,
             "usage": state.get("usage", []),
         }
-        path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        path = write_dry_run(runs_dir, case.id, record)
         return {"status": "applied", "output_path": path.as_posix()}
 
     graph = StateGraph(TriageState)

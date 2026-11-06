@@ -1,6 +1,8 @@
 # Issue triage agent
 
-A LangGraph agent that triages GitHub issues for any repo: it picks labels and a milestone, spots possible duplicates and regressions, and drafts a triage comment. A human approves before anything is "applied", and applying is a dry run: nothing is ever written to GitHub.
+An AI agent that triages GitHub issues for any repo: it picks labels and a milestone, spots possible duplicates and regressions, and drafts a triage comment. A human approves before anything is "applied", and applying is a dry run: nothing is ever written to GitHub.
+
+It is built twice, with LangGraph and with the OpenAI Agents SDK, on the same tools and prompts, to compare the frameworks: see [One agent, two frameworks](docs/frameworks.md).
 
 It is the demo agent for [Agent Flight Recorder](https://github.com/sonicjoy/agent-flight-recorder), which records its runs, finds failure patterns, and turns failures into eval cases. So it is deliberately plain: it makes real mistakes worth studying.
 
@@ -13,6 +15,9 @@ cp .env.example .env   # add GOOGLE_API_KEY (free tier) or OPENAI_API_KEY / ANTH
 # Triage an issue from the bundled dataset (this project's own issues)
 uv run triager run --issue 19 --model google_genai:gemini-3.5-flash-lite
 
+# The same, on the OpenAI Agents SDK
+uv run triager run --issue 19 --engine openai-agents --model openai:gpt-5.4-mini
+
 # Any repo: export its issues, labels and milestones (read-only, needs `gh auth login`)
 uv run triager export pydantic/pydantic-settings --limit 300
 uv run triager run --dataset datasets/pydantic__pydantic-settings --issue 771 --model openai:gpt-5.4-mini
@@ -22,7 +27,7 @@ After each run it prints every tool call, the decision next to the issue's real 
 
 Provider config (`<provider>:<model>` specs, pricing) comes from Agent Flight Recorder, installed from GitHub.
 
-## How it works
+## How it works (LangGraph version)
 
 ```
 load_issue -> triage (agent loop) -> validate --invalid--> triage (once) / fail
@@ -73,8 +78,10 @@ Real failures seen so far: `gpt-5.4-nano` follows prompt injection in an issue b
 |---|---|---|
 | `--model` | `AFR_LLM_MODEL` | `<provider>:<model>` for both steps |
 | `--comment-model` | `--model`, else `AFR_LLM_CHEAP_MODEL` | |
+| `--engine` | `langgraph` | `langgraph` or `openai-agents` |
 | `--yes` | off | Approve without asking (batch runs) |
-| `--runs-dir` | `runs` | Where `apply` writes |
+| `--runs-dir` | `runs` | Where `apply` writes (and, for `openai-agents`, the local trace) |
+| `--openai-trace` | off | `openai-agents` only: also upload the trace to OpenAI's dashboard |
 
 ## Development
 
