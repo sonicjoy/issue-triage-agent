@@ -14,7 +14,7 @@ from typing import Any, Literal, get_args
 
 from langchain_core.tools import BaseTool, ToolException, tool
 
-from issue_triager.fixtures import TriageCase
+from issue_triager.dataset import TriageCase
 from issue_triager.search import KeywordIndex
 
 FailureMode = Literal["timeout", "bad-data", "empty", "noise"]
@@ -58,9 +58,8 @@ def summarise(case: TriageCase, *, full: bool = False) -> dict[str, Any]:
         "id": case.id,
         "title": case.title,
         "status": status_of(case),
-        "areas": sorted(case.truth.areas),
-        "stretch": case.truth.stretch,
-        "week": case.truth.week,
+        "labels": sorted(case.truth.labels),
+        "milestone": case.truth.milestone,
         "body": body,
     }
 
@@ -71,8 +70,8 @@ def _corrupt(item: dict[str, Any]) -> dict[str, Any]:
         "id": item["id"],
         "title": item["title"][: len(item["title"]) // 2],
         "status": None,
-        "areas": [],
-        "week": -1,
+        "labels": [],
+        "milestone": "�",
         "body": item["body"][:40] + "��",
     }
 
@@ -91,7 +90,7 @@ def make_tools(
     @tool
     def search_issues(query: str) -> str:
         """Keyword search over this repo's existing issues. Returns up to 5 matches as JSON,
-        each with its id, title, status, area labels, stretch flag, week and the start of
+        each with its id, title, status, labels, milestone and the start of
         its body. Use specific words; there is no synonym matching."""
         mode = inject.pick("search_issues")
         if mode == "timeout":

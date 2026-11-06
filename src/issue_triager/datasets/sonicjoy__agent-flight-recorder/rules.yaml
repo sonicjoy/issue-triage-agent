@@ -1,0 +1,4 @@
+# Triage rules for this repo, on top of its labels and milestones (repo.json).
+require_label: true
+# stretch = "cut first if its milestone runs long", so it means nothing without one.
+labels_needing_milestone: [stretch]

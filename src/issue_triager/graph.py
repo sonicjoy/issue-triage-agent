@@ -30,9 +30,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
-from issue_triager.decision import TriageDecision, problems
-from issue_triager.fixtures import TriageCase, TriageInput
-from issue_triager.prompts import COMMENT_SYSTEM, TRIAGE_SYSTEM, triage_request
+from issue_triager.dataset import Dataset, TriageCase, TriageInput
+from issue_triager.decision import TriageDecision, decision_model
+from issue_triager.prompts import COMMENT_SYSTEM, triage_request, triage_system
 from issue_triager.tools import FailureInjector, make_tools
 
 MAX_ATTEMPTS = 2  # first try plus one retry after validation feedback
@@ -102,21 +102,21 @@ def _steps(attempt: int, messages: Sequence[AnyMessage]) -> list[dict[str, Any]]
 
 def build_graph(
     case: TriageCase,
-    corpus: Sequence[TriageCase],
+    dataset: Dataset,
     models: Models,
     *,
     checkpointer: BaseCheckpointSaver[Any],
     injector: FailureInjector | None = None,
     runs_dir: Path = Path("runs"),
 ) -> CompiledStateGraph[TriageState, None, TriageState, TriageState]:
-    """A graph that triages `case`, searching only `corpus` (real issues, minus the case)."""
+    """A graph that triages `case`, searching only the dataset's real issues (minus the case)."""
     injector = injector or FailureInjector()
-    by_id = {c.id: c for c in corpus if c.id != case.id}
+    schema = decision_model(dataset.repo)
     agent = create_agent(
         models.triage,
-        make_tools(corpus, target_id=case.id, injector=injector),
-        system_prompt=TRIAGE_SYSTEM,
-        response_format=ToolStrategy(TriageDecision),
+        make_tools(list(dataset.corpus.values()), target_id=case.id, injector=injector),
+        system_prompt=triage_system(dataset.repo, dataset.rules),
+        response_format=ToolStrategy(schema),
         middleware=[ToolCallLimitMiddleware(run_limit=MAX_TOOL_CALLS)],
         name="triage_agent",
     )
@@ -149,7 +149,7 @@ def build_graph(
         if raw is None:
             return {"feedback": ["No decision was returned."]}
         decision = TriageDecision.model_validate(raw)
-        return {"feedback": problems(decision, target_id=case.id, corpus=by_id)}
+        return {"feedback": dataset.problems(decision.to_truth(), target_id=case.id)}
 
     def after_validate(state: TriageState) -> str:
         if not state.get("feedback"):
@@ -187,6 +187,7 @@ def build_graph(
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         path = runs_dir / f"triage-{case.id}-{stamp}.json"
         record = {
+            "repo": dataset.repo.repo,
             "case_id": case.id,
             "models": {"triage": models.triage_spec, "comment": models.comment_spec},
             "decision": state["decision"],

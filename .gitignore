@@ -32,3 +32,5 @@ Thumbs.db
 
 # Triager dry-run output
 runs/
+# Datasets exported with `triager export` (other people's issues: don't commit)
+/datasets/

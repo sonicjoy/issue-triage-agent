@@ -13,15 +13,17 @@ from langgraph.types import Command
 from typer.testing import CliRunner
 
 from issue_triager import cli
-from issue_triager.decision import TriageDecision, problems
-from issue_triager.fixtures import load_cases, load_real
+from issue_triager.dataset import RepoInfo, Rules, load_dataset
+from issue_triager.decision import decision_model
 from issue_triager.graph import Models, TriageState, build_graph
+from issue_triager.prompts import triage_system
 from issue_triager.search import KeywordIndex
 from issue_triager.tools import FailureInjector, make_tools, status_of
 
-REAL = load_real()
-CASES = {c.id: c for c in load_cases()}
-CORPUS = {c.id: c for c in REAL}
+DATA = load_dataset()
+REAL = list(DATA.corpus.values())
+CASES = DATA.by_id
+CORPUS = DATA.corpus
 
 
 class FakeModel(GenericFakeChatModel):
@@ -43,9 +45,8 @@ def call(name: str, args: dict[str, Any]) -> AIMessage:
 
 def decide(**overrides: Any) -> AIMessage:
     args = {
-        "areas": ["evals", "infra"],
-        "stretch": False,
-        "week": 3,
+        "labels": ["evals", "infra"],
+        "milestone": "Week 3: Evals and guardrails",
         "duplicate_of": None,
         "regression_of": None,
         "confidence": 0.8,
@@ -66,7 +67,7 @@ def models(
 
 
 def run(case_id: str, m: Models, tmp_path: Path, *, approve: bool) -> dict[str, Any]:
-    graph = build_graph(CASES[case_id], REAL, m, checkpointer=InMemorySaver(), runs_dir=tmp_path)
+    graph = build_graph(CASES[case_id], DATA, m, checkpointer=InMemorySaver(), runs_dir=tmp_path)
     config: RunnableConfig = {"configurable": {"thread_id": "t"}}
     state = graph.invoke(cast(TriageState, {"case_id": case_id}), config)
     if "__interrupt__" in state:
@@ -109,7 +110,7 @@ def test_status_distinguishes_done_open_and_duplicate() -> None:
     [
         ("timeout", lambda out: "timed out" in out),
         ("empty", lambda out: out == "[]"),
-        ("bad-data", lambda out: all(i["week"] == -1 for i in json.loads(out))),
+        ("bad-data", lambda out: all(i["labels"] == [] for i in json.loads(out))),
         ("noise", lambda out: len(json.loads(out)) == 5),
     ],
 )
@@ -132,42 +133,43 @@ def test_no_injection_by_default() -> None:
     assert injector.injected == []
 
 
-# ---- Validation rules ------------------------------------------------------------
+# ---- Per-repo schema and prompt -------------------------------------------------
 
 
-def decision(**overrides: Any) -> TriageDecision:
-    base: dict[str, Any] = {
-        "areas": ["ui"],
-        "stretch": False,
-        "week": 5,
-        "confidence": 0.5,
-        "rationale": "-",
-    }
-    return TriageDecision.model_validate(base | overrides)
+def test_decision_schema_only_allows_the_repos_labels_and_milestones() -> None:
+    schema = decision_model(DATA.repo)
+    ok = {"labels": ["ui"], "milestone": None, "confidence": 1, "rationale": "-"}
+
+    schema.model_validate(ok)
+    with pytest.raises(ValueError):
+        schema.model_validate(ok | {"labels": ["wontfix"]})
+    with pytest.raises(ValueError):
+        schema.model_validate(ok | {"milestone": "Week 9"})
 
 
-@pytest.mark.parametrize(
-    ("overrides", "expected"),
-    [
-        ({}, None),
-        ({"areas": []}, "at least one area"),
-        ({"week": 9}, "1-5 or null"),
-        ({"stretch": True, "week": None}, "needs a week"),
-        ({"duplicate_of": "2", "regression_of": "1"}, "not both"),
-        ({"duplicate_of": "29"}, "being triaged"),
-        ({"duplicate_of": "999"}, "doesn't exist"),
-        ({"regression_of": "5"}, "isn't done"),  # open
-        ({"regression_of": "3"}, "isn't done"),  # closed as a duplicate
-        ({"regression_of": "#1"}, None),
-    ],
-)
-def test_validation_rules(overrides: dict[str, Any], expected: str | None) -> None:
-    found = problems(decision(**overrides), target_id="29", corpus=CORPUS)
+def test_schema_for_a_repo_without_milestones() -> None:
+    schema = decision_model(RepoInfo(repo="a/b", labels=[]))
 
-    if expected is None:
-        assert found == []
-    else:
-        assert any(expected in p for p in found), found
+    decision = schema.model_validate({"labels": ["anything"], "confidence": 1, "rationale": "-"})
+
+    assert decision.milestone is None
+
+
+def test_prompt_is_built_from_the_repo() -> None:
+    prompt = triage_system(DATA.repo, DATA.rules)
+
+    assert "sonicjoy/agent-flight-recorder: Record, replay" in prompt
+    assert "- recorder: Ingest, storage, redaction, search, CLI" in prompt
+    assert "Week 3: Evals and guardrails" in prompt
+    assert "These labels need a milestone: stretch." in prompt
+
+
+def test_prompt_skips_empty_sections() -> None:
+    prompt = triage_system(RepoInfo(repo="a/b"), Rules())
+
+    assert "Labels:" not in prompt
+    assert "Milestones" not in prompt
+    assert "Repo rules" not in prompt
 
 
 # ---- Graph -----------------------------------------------------------------------
@@ -180,7 +182,7 @@ def test_approved_run_searches_decides_and_writes_dry_run_file(tmp_path: Path) -
 
     assert state["status"] == "applied"
     record = json.loads(Path(state["output_path"]).read_text(encoding="utf-8"))
-    assert record["decision"]["areas"] == ["evals", "infra"]
+    assert record["decision"]["labels"] == ["evals", "infra"]
     assert record["comment"] == "Looks like evals work."
     assert record["steps"][0]["tool"] == "search_issues"
     assert record["steps"][0]["status"] == "success"
@@ -194,7 +196,7 @@ def test_rejected_run_writes_nothing(tmp_path: Path) -> None:
 
 
 def test_invalid_decision_is_retried_with_feedback(tmp_path: Path) -> None:
-    m = models(iter([decide(stretch=True, week=None), decide()]))
+    m = models(iter([decide(labels=["ui", "stretch"], milestone=None), decide()]))
 
     state = run("19", m, tmp_path, approve=True)
 
@@ -218,14 +220,14 @@ runner = CliRunner()
 
 
 def test_cli_rejects_unknown_issue() -> None:
-    result = runner.invoke(cli.app, ["--issue", "nope"])
+    result = runner.invoke(cli.app, ["run", "--issue", "nope"])
 
     assert result.exit_code == 2
-    assert "no fixture" in result.output
+    assert "no issue" in result.output
 
 
 def test_cli_rejects_unknown_failure_mode() -> None:
-    result = runner.invoke(cli.app, ["--issue", "19", "--inject", "meteor"])
+    result = runner.invoke(cli.app, ["run", "--issue", "19", "--inject", "meteor"])
 
     assert result.exit_code == 2
 
@@ -233,7 +235,7 @@ def test_cli_rejects_unknown_failure_mode() -> None:
 def test_cli_explains_missing_key(clean_env: pytest.MonkeyPatch, tmp_path: Path) -> None:
     clean_env.chdir(tmp_path)  # no .env here
 
-    result = runner.invoke(cli.app, ["--issue", "19", "--model", "openai:gpt-5.4-nano"])
+    result = runner.invoke(cli.app, ["run", "--issue", "19", "--model", "openai:gpt-5.4-nano"])
 
     assert result.exit_code == 2
     assert "OPENAI_API_KEY" in result.output
@@ -243,9 +245,9 @@ def test_cli_end_to_end_with_auto_approve(monkeypatch: pytest.MonkeyPatch, tmp_p
     fake = models(iter([call("search_issues", {"query": "evals"}), decide()]))
     monkeypatch.setattr(cli, "resolve_models", lambda *a, **k: fake)
 
-    result = runner.invoke(cli.app, ["--issue", "19", "--yes", "--runs-dir", str(tmp_path)])
+    result = runner.invoke(cli.app, ["run", "--issue", "19", "--yes", "--runs-dir", str(tmp_path)])
 
     assert result.exit_code == 0, result.output
-    assert "vs truth: areas ok; stretch ok; week ok" in result.output
+    assert "vs truth: labels ok; milestone ok; duplicate_of ok" in result.output
     assert "status:  applied" in result.output
     assert "cost: $" in result.output

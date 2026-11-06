@@ -1,24 +1,28 @@
 # Issue triage agent
 
-A LangGraph agent that triages GitHub issues. It is the demo agent for [Agent Flight Recorder](https://github.com/sonicjoy/agent-flight-recorder), whose runs the recorder captures. It triages this repo's own issues: area labels, `stretch`, milestone week, and a possible duplicate or regression, then drafts a comment. It's deliberately plain, so it makes real mistakes worth recording.
+A LangGraph agent that triages GitHub issues for any repo: it picks labels and a milestone, spots possible duplicates and regressions, and drafts a triage comment. A human approves before anything is "applied", and applying is a dry run: nothing is ever written to GitHub.
 
-```bash
-uv run triager --issue 19 --model google_genai:gemini-3.5-flash-lite
-uv run triager --issue s53 --model openai:gpt-5.4-nano --inject timeout,bad-data --rate 0.5 --seed 7
-```
+It is the demo agent for [Agent Flight Recorder](https://github.com/sonicjoy/agent-flight-recorder), which records its runs, finds failure patterns, and turns failures into eval cases. So it is deliberately plain: it makes real mistakes worth studying.
 
-## Setup
+## Quick start
 
 ```bash
 uv sync
-cp .env.example .env   # add a GOOGLE_API_KEY (free) or another provider's key
+cp .env.example .env   # add GOOGLE_API_KEY (free tier) or OPENAI_API_KEY / ANTHROPIC_API_KEY
+
+# Triage an issue from the bundled dataset (this project's own issues)
+uv run triager run --issue 19 --model google_genai:gemini-3.5-flash-lite
+
+# Any repo: export its issues, labels and milestones (read-only, needs `gh auth login`)
+uv run triager export pydantic/pydantic-settings --limit 300
+uv run triager run --dataset datasets/pydantic__pydantic-settings --issue 771 --model openai:gpt-5.4-mini
 ```
 
-It uses Agent Flight Recorder's provider config (`<provider>:<model>` specs, pricing), installed from GitHub.
+After each run it prints every tool call, the decision next to the issue's real triage (which the agent never sees), tokens, cost and latency.
 
-`--issue` takes a real issue number or a synthetic case id (`s01`-`s65`, see [fixtures](src/issue_triager/fixtures/README.md)). After a run it prints the decision next to the ground truth, which the agent never sees.
+Provider config (`<provider>:<model>` specs, pricing) comes from Agent Flight Recorder, installed from GitHub.
 
-## Graph
+## How it works
 
 ```
 load_issue -> triage (agent loop) -> validate --invalid--> triage (once) / fail
@@ -29,21 +33,57 @@ load_issue -> triage (agent loop) -> validate --invalid--> triage (once) / fail
 
 | Step | What |
 |---|---|
-| `triage` | LangChain `create_agent` with two tools and structured output (`TriageDecision`). The model decides when and what to search; at most 8 tool calls |
-| Tools | `search_issues` (keyword BM25 over real issues) and `get_issue`. They read the fixtures only, and never show the issue being triaged |
-| `validate` | Code rules: known areas, week 1-5 or null, stretch needs a week, linked issues exist, only done issues can regress. One retry with the broken rules as feedback |
+| `triage` | LangChain `create_agent` with two tools and structured output. The model decides when and what to search; at most 8 tool calls |
+| Tools | `search_issues` (keyword BM25) and `get_issue` over the repo's existing issues. The issue being triaged is never visible |
+| Schema | Built per repo: labels and milestones are enums of that repo's taxonomy, so the model can only pick values that exist |
+| Prompt | Built from the repo's description, label and milestone descriptions, and optional `rules.yaml` |
+| `validate` | Known labels and milestone, repo rules, linked issues exist, only done issues can regress. One retry with the broken rules as feedback |
 | `draft_comment` | Cheap model; duplicates and regressions are worded as suggestions |
 | `human_review` | LangGraph `interrupt`: y/n prompt, or `--yes` |
-| `apply` | Dry run: writes the decision, comment, tool steps, injected failures and token usage to `runs/` (git-ignored). Nothing goes to GitHub |
+| `apply` | Dry run: writes the decision, comment, tool steps, injected failures and token usage to `runs/` |
 
-## Options
+**Duplicate vs regression.** Both point at an earlier issue but mean opposite actions. A duplicate asks for the same work again: close it. A regression reports that work a *finished* issue delivered has broken again: keep it open as a bug. A bug in unfinished work is neither.
+
+## Datasets
+
+`triager export OWNER/NAME` writes a dataset folder:
+
+| File | Source |
+|---|---|
+| `repo.json` | Exported: description, labels, milestones |
+| `issues.json` | Exported: every issue with its real labels, milestone, and duplicate (`Duplicate of #N` comment) or regression (`Regression of #N` line) |
+| `synthetic.yaml` | Optional, hand-written extra cases, reported separately |
+| `rules.yaml` | Optional: `require_label`, `labels_needing_milestone` |
+
+The bundled dataset, [sonicjoy/agent-flight-recorder](src/issue_triager/datasets/sonicjoy__agent-flight-recorder/README.md), has 34 real issues and 65 synthetic ones (reworded duplicates, near-duplicates, prompt injection, regressions vs look-alikes).
+
+## Making it fail on purpose
+
+| Option | |
+|---|---|
+| `--inject timeout,bad-data,empty,noise` | Break tool calls at random |
+| `--rate 0.3`, `--seed 7` | Chance per call; repeatable runs |
+| `--cheap` | Triage with `AFR_LLM_CHEAP_MODEL`; smaller models fail more |
+
+Real failures seen so far: `gpt-5.4-nano` follows prompt injection in an issue body; `gemini-3.5-flash-lite` misses a regression after injected timeouts and invents one in its comment; `gpt-5.4-mini` confuses overlapping labels and suggests confident but wrong duplicates on a real repo.
+
+## Other options
 
 | Option | Default | |
 |---|---|---|
 | `--model` | `AFR_LLM_MODEL` | `<provider>:<model>` for both steps |
 | `--comment-model` | `--model`, else `AFR_LLM_CHEAP_MODEL` | |
-| `--cheap` | off | Triage with `AFR_LLM_CHEAP_MODEL` (smaller models fail more) |
-| `--inject` | none | Tool failures: `timeout`, `bad-data`, `empty`, `noise` |
-| `--rate`, `--seed` | 0.3, random | Chance per tool call; seed for repeatable runs |
 | `--yes` | off | Approve without asking (batch runs) |
 | `--runs-dir` | `runs` | Where `apply` writes |
+
+## Development
+
+```bash
+uv run pre-commit install
+uv run pytest
+uv run pyright
+```
+
+## Licence
+
+MIT

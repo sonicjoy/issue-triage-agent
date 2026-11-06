@@ -1,4 +1,4 @@
-"""`triager --issue <id>`: triage one fixture issue end to end (dry run)."""
+"""Triage GitHub issues with a LangGraph agent (dry run: nothing is written to GitHub)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,15 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from issue_triager.fixtures import GroundTruth, TriageCase, load_cases, load_real
+from issue_triager.dataset import (
+    DATASETS_DIR,
+    DEFAULT_DATASET,
+    GroundTruth,
+    TriageCase,
+    dataset_dir_name,
+    load_dataset,
+)
+from issue_triager.export import export as export_dataset
 from issue_triager.graph import Models, TriageState, Usage, build_graph
 from issue_triager.tools import FAILURE_MODES, FailureInjector, FailureMode
 
@@ -47,10 +55,12 @@ def parse_inject(value: str) -> list[FailureMode]:
 def grade(decision: dict[str, Any], truth: GroundTruth) -> str:
     """Compare with the ground truth the agent never saw."""
     marks: list[str] = []
-    for name in ("areas", "stretch", "week", "duplicate_of", "regression_of"):
+    for name in ("labels", "milestone", "duplicate_of", "regression_of"):
         got, want = decision.get(name), getattr(truth, name)
-        if name == "areas":
+        if name == "labels":
             got, want = sorted(got or []), sorted(want)
+        elif isinstance(got, str):
+            got = got.lstrip("#")
         marks.append(f"{name} {'ok' if got == want else f'WRONG (want {want})'}")
     return "; ".join(marks)
 
@@ -81,8 +91,11 @@ def show_review(state: dict[str, Any], case: TriageCase) -> None:
 
 
 @app.command()
-def triage(
-    issue: Annotated[str, typer.Option(help='Fixture id: a real issue ("7") or synthetic ("s53")')],
+def run(
+    issue: Annotated[str, typer.Option(help='Issue number ("7") or synthetic case id ("s53")')],
+    dataset: Annotated[
+        Path, typer.Option(help="Dataset folder from `triager export`")
+    ] = DEFAULT_DATASET,
     model: Annotated[str | None, typer.Option(help="<provider>:<model> for both steps")] = None,
     comment_model: Annotated[str | None, typer.Option(help="Model for the comment")] = None,
     cheap: Annotated[bool, typer.Option(help="Triage with the cheap model")] = False,
@@ -92,10 +105,14 @@ def triage(
     seed: Annotated[int | None, typer.Option(help="Seed for repeatable injection")] = None,
     runs_dir: Annotated[Path, typer.Option(help="Where 'apply' writes")] = Path("runs"),
 ) -> None:
-    cases = {c.id: c for c in load_cases()}
-    case = cases.get(issue.lstrip("#"))
+    """Triage one issue from a dataset end to end."""
+    if not (dataset / "issues.json").exists():
+        typer.echo(f"no dataset at {dataset}; create one with `triager export OWNER/NAME`")
+        raise typer.Exit(2)
+    data = load_dataset(dataset)
+    case = data.by_id.get(issue.lstrip("#"))
     if case is None:
-        typer.echo(f"no fixture with id {issue!r} (real: 1-{len(load_real())}, synthetic: s01...)")
+        typer.echo(f"no issue {issue!r} in {data.repo.repo} ({len(data.real)} real issues)")
         raise typer.Exit(2)
     try:
         models = resolve_models(model, comment_model, cheap=cheap, settings=Settings())
@@ -105,11 +122,11 @@ def triage(
 
     injector = FailureInjector(parse_inject(inject), rate=rate, seed=seed)
     graph = build_graph(
-        case, load_real(), models, checkpointer=InMemorySaver(), injector=injector,
+        case, data, models, checkpointer=InMemorySaver(), injector=injector,
         runs_dir=runs_dir,
     )  # fmt: skip
     config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
-    typer.echo(f"triaging {case.id} ({case.source}): {case.title}")
+    typer.echo(f"triaging {data.repo.repo}#{case.id} ({case.source}): {case.title}")
     typer.echo(f"models:  triage {models.triage_spec}, comment {models.comment_spec}")
 
     started = time.perf_counter()
@@ -136,3 +153,25 @@ def triage(
     typer.echo(f"latency: {time.perf_counter() - started:.1f}s")
     if state.get("status") == "failed":
         raise typer.Exit(1)
+
+
+@app.command()
+def export(
+    repo: Annotated[str, typer.Argument(help="GitHub repo as OWNER/NAME")],
+    out: Annotated[
+        Path | None, typer.Option(help="Dataset folder [default: ./datasets/OWNER__NAME]")
+    ] = None,
+    limit: Annotated[int, typer.Option(help="Most issues to fetch")] = 1000,
+) -> None:
+    """Export a repo's issues, labels and milestones to a dataset (read-only, uses `gh`)."""
+    if repo.count("/") != 1:
+        typer.echo("repo must be OWNER/NAME")
+        raise typer.Exit(2)
+    target = out or Path("datasets") / dataset_dir_name(repo)
+    issues = export_dataset(repo, target, limit=limit).issues
+    labelled = sum(1 for c in issues if c.truth.labels)
+    dupes = [f"#{c.id} -> #{c.truth.duplicate_of}" for c in issues if c.truth.duplicate_of]
+    typer.echo(f"wrote {len(issues)} issues ({labelled} labelled) to {target.as_posix()}")
+    typer.echo(f"duplicates: {', '.join(dupes) or 'none'}")
+    if target.resolve().is_relative_to(DATASETS_DIR.resolve()):
+        typer.echo("(bundled dataset: commit the change)")
