@@ -10,7 +10,7 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 
-from issue_triager.fixtures import TriageCase
+from issue_triager.dataset import TriageCase
 
 TOKEN = re.compile(r"[a-z0-9]+")
 STOPWORDS = frozenset(

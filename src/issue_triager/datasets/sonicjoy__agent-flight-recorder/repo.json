@@ -1,0 +1,68 @@
+{
+  "repo": "sonicjoy/agent-flight-recorder",
+  "description": "Record, replay and analyse AI agent runs; turn failures into eval cases",
+  "labels": [
+    {
+      "name": "analyst",
+      "description": "Analyst agent"
+    },
+    {
+      "name": "demo-agent",
+      "description": "LangGraph issue triager demo agent"
+    },
+    {
+      "name": "documentation"
+    },
+    {
+      "name": "evals",
+      "description": "Eval harness, cases, judge, red-team"
+    },
+    {
+      "name": "infra",
+      "description": "Tooling, CI, Docker, Terraform, GCP"
+    },
+    {
+      "name": "mcp",
+      "description": "MCP server"
+    },
+    {
+      "name": "recorder",
+      "description": "Ingest, storage, redaction, search, CLI"
+    },
+    {
+      "name": "stretch",
+      "description": "Nice to have: cut first if the week runs long"
+    },
+    {
+      "name": "ui",
+      "description": "Replay UI and dashboard"
+    }
+  ],
+  "milestones": [
+    {
+      "title": "Week 1: Demo agent and foundations",
+      "description": "Repo tooling and a provider-switchable LangGraph issue triager that produces runs to record.",
+      "due_on": "2026-11-08"
+    },
+    {
+      "title": "Week 2: Recorder core",
+      "description": "Ingest Claude Code and OTel runs, redact, store in Postgres + pgvector, list and replay from the CLI.",
+      "due_on": "2026-11-15"
+    },
+    {
+      "title": "Week 3: Evals and guardrails",
+      "description": "Error analysis on real runs, own eval harness, golden cases, LLM judge, red-team set, evals gating CI.",
+      "due_on": "2026-11-22"
+    },
+    {
+      "title": "Week 4: Analyst, MCP and deploy",
+      "description": "Analyst agent turns failures into eval cases; MCP server; deployed to Cloud Run + Cloud SQL with Terraform.",
+      "due_on": "2026-11-29"
+    },
+    {
+      "title": "Week 5: Replay UI and launch",
+      "description": "React replay UI, five-minute quickstart, README, demo and going public.",
+      "due_on": "2026-12-06"
+    }
+  ]
+}

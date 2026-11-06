@@ -45,7 +45,7 @@ select = [
 ]
 
 [tool.pyright]
-include = ["src", "tests", "scripts"]
+include = ["src", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"  # LangGraph's types are incomplete; strict is mostly noise
 venvPath = "."
