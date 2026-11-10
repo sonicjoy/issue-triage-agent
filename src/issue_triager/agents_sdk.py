@@ -49,7 +49,7 @@ from agents import (
 from agents.strict_schema import ensure_strict_json_schema
 from agents.tool import FunctionToolResult
 from agents.tool_context import ToolContext
-from agents.tracing import Span, Trace, TracingProcessor
+from agents.tracing import Span, Trace, TracingProcessor, get_trace_provider
 from agents.tracing.processors import default_processor
 from flight_recorder.llm import MissingCredentialsError, api_key_for, parse_spec
 from flight_recorder.settings import Settings
@@ -364,14 +364,32 @@ class TraceFile(TracingProcessor):
             self._file.flush()
 
 
+def _registered_processors() -> list[TracingProcessor]:
+    """The SDK can add or replace processors but not list them, so read its private list.
+
+    Returns [] if the SDK has moved it; then only our own processors are kept.
+    """
+    multi = getattr(get_trace_provider(), "_multi_processor", None)
+    processors = getattr(multi, "_processors", None)
+    return list(processors) if isinstance(processors, tuple | list) else []
+
+
 def configure_tracing(path: Path, *, upload_key: str | None = None) -> TraceFile:
-    """Keep traces local; also upload them to OpenAI only when given a key for it."""
+    """Keep traces local; also upload them to OpenAI only when given a key for it.
+
+    Replaces the SDK's default upload to OpenAI and any earlier run's trace file, but keeps
+    processors someone else registered, such as the OpenInference one `--record` adds.
+    """
     local = TraceFile(path)
-    processors: list[TracingProcessor] = [local]
+    uploader = default_processor()
+    others = [
+        p for p in _registered_processors() if p is not uploader and not isinstance(p, TraceFile)
+    ]
+    processors: list[TracingProcessor] = [local, *others]
     if upload_key:
         set_tracing_export_api_key(upload_key)
-        processors.append(default_processor())
-    set_trace_processors(processors)  # replaces the SDK's default upload to OpenAI
+        processors.append(uploader)
+    set_trace_processors(processors)
     set_tracing_disabled(False)
     return local
 
