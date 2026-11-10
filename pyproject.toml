@@ -20,6 +20,14 @@ dependencies = [
 [project.scripts]
 triager = "issue_triager.cli:app"
 
+[project.optional-dependencies]
+record = [
+    "openinference-instrumentation-langchain>=0.1.80",
+    "openinference-instrumentation-openai-agents>=2.6.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.1",
+    "opentelemetry-sdk>=1.45.1",
+]
+
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]
 build-backend = "uv_build"

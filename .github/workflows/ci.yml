@@ -42,7 +42,7 @@ jobs:
           git config --global url."https://x-access-token:${TOKEN}@github.com/sonicjoy/agent-flight-recorder".insteadOf "https://github.com/sonicjoy/agent-flight-recorder"
 
       - name: Install dependencies
-        run: uv sync --locked
+        run: uv sync --locked --all-extras  # the recording tests need the `record` extra
 
       - name: Ruff lint
         run: uv run ruff check --output-format=github

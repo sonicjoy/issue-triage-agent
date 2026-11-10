@@ -169,11 +169,16 @@ def test_apply_tool_takes_the_repos_own_schema(tmp_path: Path) -> None:
 def test_trace_is_written_locally_and_not_uploaded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def no_upload() -> None:
+    uploader = agents_sdk.default_processor()  # the SDK's upload to OpenAI
+
+    def no_upload(*args: Any) -> None:
         raise AssertionError("the OpenAI trace exporter must stay off by default")
 
-    monkeypatch.setattr(agents_sdk, "default_processor", no_upload)
+    for hook in ("on_trace_start", "on_trace_end", "on_span_start", "on_span_end"):
+        monkeypatch.setattr(uploader, hook, no_upload)
     run(models(search(), apply()), tmp_path)
+
+    assert uploader not in agents_sdk._registered_processors()  # pyright: ignore[reportPrivateUsage]
 
     lines = [
         json.loads(line)

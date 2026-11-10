@@ -82,6 +82,18 @@ Real failures seen so far: `gpt-5.4-nano` follows prompt injection in an issue b
 | `--yes` | off | Approve without asking (batch runs) |
 | `--runs-dir` | `runs` | Where `apply` writes (and, for `openai-agents`, the local trace) |
 | `--openai-trace` | off | `openai-agents` only: also upload the trace to OpenAI's dashboard |
+| `--record URL` | off | Send traces to an OTLP endpoint, such as Agent Flight Recorder's `afr serve` (`http://127.0.0.1:4318`). Defaults to `$OTEL_EXPORTER_OTLP_ENDPOINT`; needs `uv sync --extra record` |
+
+## Recording runs
+
+With the optional `record` extra, the triager sends OpenTelemetry traces of each run to any OTLP/HTTP endpoint. It's off unless you pass `--record` or set `OTEL_EXPORTER_OTLP_ENDPOINT`.
+
+```bash
+uv sync --extra record
+triager run --issue 19 --yes --record http://127.0.0.1:4318
+```
+
+It uses the standard OpenInference instrumentors (LangChain/LangGraph, or the OpenAI Agents SDK, depending on `--engine`), so a recorder sees it as it would any outside agent. Each triage is one trace, under a root span `triage <repo>#<issue>` that ends as an error if the triage failed. Traces include prompts and outputs: send them only to an endpoint you trust. [Agent Flight Recorder](https://github.com/sonicjoy/agent-flight-recorder) redacts secrets before storing anything.
 
 ## Development
 
