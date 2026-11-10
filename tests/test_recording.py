@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import builtins
+import socket
 import threading
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -20,8 +21,8 @@ from test_triager import call, decide
 from test_triager import models as langgraph_models
 from typer.testing import CliRunner
 
-from issue_triager import agents_sdk, cli
-from issue_triager.recording import endpoint_from, traces_url
+from issue_triager import agents_sdk, cli, recording
+from issue_triager.recording import Target, endpoint_from, shown, traces_url
 
 
 class Collector:
@@ -46,18 +47,26 @@ class Collector:
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-    def spans(self) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-        """(resource attributes, span attributes) for every span received."""
-        found = []
+    def received(self) -> Iterator[tuple[Any, Any]]:
+        """(resource, span) protobufs for every span received."""
         for _, _, body in self.requests:
-            export = ExportTraceServiceRequest.FromString(body)
-            for resource_spans in export.resource_spans:
-                resource = {a.key: a.value.string_value for a in resource_spans.resource.attributes}
+            for resource_spans in ExportTraceServiceRequest.FromString(body).resource_spans:
                 for scope in resource_spans.scope_spans:
                     for span in scope.spans:
-                        attrs = {a.key: a.value.string_value for a in span.attributes}
-                        found.append((resource, attrs | {"name": span.name}))
-        return found
+                        yield resource_spans.resource, span
+
+    def spans(self) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """(resource attributes, span attributes) for every span received."""
+        return [
+            (
+                {a.key: a.value.string_value for a in resource.attributes},
+                {a.key: a.value.string_value for a in span.attributes} | {"name": span.name},
+            )
+            for resource, span in self.received()
+        ]
+
+    def raw_spans(self) -> list[Any]:
+        return [span for _, span in self.received()]
 
 
 @pytest.fixture
@@ -74,10 +83,57 @@ def restore_agents_tracing() -> Generator[None]:
 
 
 def test_endpoint_option_then_environment_then_off(clean_env: pytest.MonkeyPatch) -> None:
-    assert endpoint_from(None) is None
+    assert endpoint_from(None) == Target(None)
     clean_env.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://env:4318")
-    assert endpoint_from(None) == "http://env:4318"
-    assert endpoint_from("http://option:4318") == "http://option:4318"
+    assert endpoint_from(None) == Target("http://env:4318/v1/traces")
+    assert endpoint_from("http://option:4318") == Target("http://option:4318/v1/traces")
+
+
+BASE = {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://b:4318"}
+
+
+@pytest.mark.parametrize(
+    ("environ", "expected"),
+    [
+        # The traces-specific endpoint is used as is, and wins over the base one.
+        (BASE | {"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://t:9/x"}, Target("http://t:9/x")),
+        (BASE | {"OTEL_SDK_DISABLED": "TRUE"}, Target(None)),
+        (BASE | {"OTEL_TRACES_EXPORTER": "none"}, Target(None)),
+        (BASE | {"OTEL_TRACES_EXPORTER": "console, otlp"}, Target("http://b:4318/v1/traces")),
+        (
+            BASE | {"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf"},
+            Target("http://b:4318/v1/traces"),
+        ),
+        # The traces-specific protocol wins over the general one.
+        (
+            BASE
+            | {
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+            },
+            Target("http://b:4318/v1/traces"),
+        ),
+    ],
+)
+def test_endpoint_follows_the_standard_otel_variables(
+    environ: dict[str, str], expected: Target
+) -> None:
+    assert endpoint_from(None, environ) == expected
+
+
+def test_grpc_in_the_environment_turns_recording_off_with_a_note() -> None:
+    environ = BASE | {"OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"}
+    target = endpoint_from(None, environ)
+
+    assert target.url is None
+    assert target.note is not None and "OTEL_EXPORTER_OTLP_PROTOCOL=grpc" in target.note
+    # --record is explicit, so it wins over every environment setting.
+    assert endpoint_from("http://x:4318", environ | {"OTEL_SDK_DISABLED": "true"}).url
+
+
+def test_shown_hides_credentials_and_query() -> None:
+    assert shown("https://user:tok@host:4318/v1/traces?key=s#f") == "https://host:4318/v1/traces"
+    assert shown("http://[::1]:4318/v1/traces") == "http://[::1]:4318/v1/traces"
 
 
 @pytest.mark.parametrize(
@@ -86,6 +142,10 @@ def test_endpoint_option_then_environment_then_off(clean_env: pytest.MonkeyPatch
 )
 def test_traces_url(endpoint: str) -> None:
     assert traces_url(endpoint) == "http://127.0.0.1:4318/v1/traces"
+
+
+def test_traces_url_keeps_a_query_after_the_path() -> None:
+    assert traces_url("http://h:4318/otel?key=k") == "http://h:4318/otel/v1/traces?key=k"
 
 
 def run_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, engine: str, *extra: str) -> Any:
@@ -139,18 +199,26 @@ def test_record_sends_openinference_spans(
     assert expected_kinds <= {a.get("openinference.span.kind") for _, a in spans}
 
 
+@pytest.mark.parametrize(
+    ("engine", "missing"),
+    [
+        ("langgraph", "opentelemetry.exporter"),
+        ("langgraph", "openinference.instrumentation.langchain"),
+        ("openai-agents", "openinference.instrumentation.openai_agents"),
+    ],
+)
 def test_missing_extra_is_explained(
-    clean_env: pytest.MonkeyPatch, tmp_path: Path, collector: Collector
+    clean_env: pytest.MonkeyPatch, tmp_path: Path, collector: Collector, engine: str, missing: str
 ) -> None:
     real_import = builtins.__import__
 
-    def no_otel(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name.startswith("opentelemetry.exporter"):
+    def without(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name.startswith(missing):
             raise ImportError(name)
         return real_import(name, *args, **kwargs)
 
-    clean_env.setattr(builtins, "__import__", no_otel)
-    result = run_cli(clean_env, tmp_path, "langgraph", "--record", collector.url)
+    clean_env.setattr(builtins, "__import__", without)
+    result = run_cli(clean_env, tmp_path, engine, "--record", collector.url)
 
     assert result.exit_code == 2
     assert "uv sync --extra record" in result.output
@@ -179,16 +247,6 @@ def test_local_trace_keeps_processors_others_registered(tmp_path: Path) -> None:
     assert default_processor() not in registered  # no upload to OpenAI
 
 
-def raw_spans(collector: Collector) -> list[Any]:
-    return [
-        span
-        for _, _, body in collector.requests
-        for resource_spans in ExportTraceServiceRequest.FromString(body).resource_spans
-        for scope in resource_spans.scope_spans
-        for span in scope.spans
-    ]
-
-
 @pytest.mark.parametrize("engine", ["langgraph", "openai-agents"])
 def test_one_triage_is_one_trace_under_a_root_span(
     clean_env: pytest.MonkeyPatch, tmp_path: Path, collector: Collector, engine: str
@@ -197,7 +255,7 @@ def test_one_triage_is_one_trace_under_a_root_span(
     result = run_cli(clean_env, tmp_path, engine, "--record", collector.url)
 
     assert result.exit_code == 0, result.output
-    spans = raw_spans(collector)
+    spans = collector.raw_spans()
     assert len({s.trace_id for s in spans}) == 1
     [root] = [s for s in spans if not s.parent_span_id]
     assert root.name == "triage sonicjoy/agent-flight-recorder#19"
@@ -214,6 +272,51 @@ def test_a_failed_triage_marks_the_root_span_as_an_error(
     result = run_cli(clean_env, tmp_path, "langgraph", "--record", collector.url)
 
     assert result.exit_code == 1
-    [root] = [s for s in raw_spans(collector) if not s.parent_span_id]
+    [root] = [s for s in collector.raw_spans() if not s.parent_span_id]
     assert root.status.code == root.status.STATUS_CODE_ERROR
     assert any(event.name == "exception" for event in root.events)
+
+
+def closed_port_url() -> str:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    return f"http://127.0.0.1:{port}"
+
+
+def test_an_unreachable_endpoint_is_reported_not_silent(
+    clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    clean_env.setattr(recording, "EXPORT_TIMEOUT", 0.5)
+    result = run_cli(clean_env, tmp_path, "langgraph", "--record", closed_port_url())
+
+    assert result.exit_code == 0, result.output  # the triage itself worked
+    assert "batch(es) of spans didn't reach" in result.output
+    assert "status:  applied" in result.output
+
+
+def test_a_failure_while_stopping_doesnt_hide_the_result(
+    clean_env: pytest.MonkeyPatch, tmp_path: Path, collector: Collector
+) -> None:
+    from opentelemetry.sdk.trace import TracerProvider
+
+    def broken(*args: Any, **kwargs: Any) -> bool:
+        raise RuntimeError("flush broke")
+
+    clean_env.setattr(TracerProvider, "force_flush", broken)
+    result = run_cli(clean_env, tmp_path, "langgraph", "--record", collector.url)
+
+    assert result.exit_code == 0, result.output
+    assert "record:  stopping: RuntimeError: flush broke" in result.output
+    assert "status:  applied" in result.output
+
+
+def test_credentials_in_the_endpoint_are_not_printed(
+    clean_env: pytest.MonkeyPatch, tmp_path: Path, collector: Collector
+) -> None:
+    secret_url = collector.url.replace("http://", "http://user:s3cret@") + "?token=s3cret"
+    result = run_cli(clean_env, tmp_path, "langgraph", "--record", secret_url)
+
+    assert result.exit_code == 0, result.output
+    assert "s3cret" not in result.output
+    assert f"record:  traces to {collector.url}/v1/traces" in result.output

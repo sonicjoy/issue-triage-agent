@@ -33,7 +33,13 @@ from issue_triager.dataset import (
 )
 from issue_triager.export import export as export_dataset
 from issue_triager.graph import Models, TriageState, Usage, build_graph
-from issue_triager.recording import Recording, RecordingUnavailable, endpoint_from, start_recording
+from issue_triager.recording import (
+    Recording,
+    RecordingUnavailable,
+    endpoint_from,
+    shown,
+    start_recording,
+)
 from issue_triager.tools import FAILURE_MODES, FailureInjector, FailureMode
 
 app = typer.Typer(add_completion=False, help=__doc__)
@@ -200,13 +206,16 @@ def run(
     typer.echo(f"models:  triage {models.triage_spec}, comment {models.comment_spec}")
 
     recording: Recording | None = None
-    if endpoint := endpoint_from(record):
+    target = endpoint_from(record)
+    if target.note:
+        typer.echo(f"record:  {target.note}")
+    if target.url:
         try:
-            recording = start_recording(endpoint, engine=engine)
+            recording = start_recording(target.url, engine=engine)
         except RecordingUnavailable as error:
             typer.echo(f"error: {error}")
             raise typer.Exit(2) from error
-        typer.echo(f"record:  traces to {recording.url}")
+        typer.echo(f"record:  traces to {shown(recording.url)}")
 
     started = time.perf_counter()
     root = (
@@ -227,18 +236,18 @@ def run(
                     injector=injector, runs_dir=runs_dir,
                     trace_upload_key=upload_key.get_secret_value() if upload_key else None,
                 )  # fmt: skip
+            failed = state.get("status") == "failed"
             if recording:
-                failed = state.get("status") == "failed"
                 recording.finish(span, failed="failed validation" if failed else None)
     except Exception as error:  # provider and network errors: one clear line
         first_line = str(error).splitlines()[0] if str(error) else ""
         typer.echo(f"error: {type(error).__name__}: {first_line}")
         raise typer.Exit(1) from error
     finally:
-        if recording:
-            recording.stop()  # flush buffered spans before exiting
+        if recording and (problem := recording.stop()):  # flushes buffered spans
+            typer.echo(f"record:  {problem}")
 
-    if state.get("status") == "failed":
+    if failed:
         show_review(state, case)
         typer.echo(
             f"failed validation after {state.get('attempts')} attempts: {state.get('feedback')}"
@@ -248,7 +257,7 @@ def run(
     typer.echo(report_usage(state.get("usage", [])))
     typer.echo(f"status:  {state.get('status')}  {state.get('output_path', '')}".rstrip())
     typer.echo(f"latency: {time.perf_counter() - started:.1f}s")
-    if state.get("status") == "failed":
+    if failed:
         raise typer.Exit(1)
 
 

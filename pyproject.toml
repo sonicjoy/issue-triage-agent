@@ -66,6 +66,7 @@ addopts = "-ra --strict-markers"
 
 [dependency-groups]
 dev = [
+    "issue-triage-agent[record]",  # so tests and pyright see the recording code
     "pre-commit>=4.7.0",
     "pyright[nodejs]>=1.1.414",
     "pytest>=9.2.0",

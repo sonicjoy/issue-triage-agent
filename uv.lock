@@ -625,6 +625,7 @@ record = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "issue-triage-agent", extra = ["record"] },
     { name = "pre-commit" },
     { name = "pyright", extra = ["nodejs"] },
     { name = "pytest" },
@@ -649,6 +650,7 @@ provides-extras = ["record"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "issue-triage-agent", extras = ["record"] },
     { name = "pre-commit", specifier = ">=4.7.0" },
     { name = "pyright", extras = ["nodejs"], specifier = ">=1.1.414" },
     { name = "pytest", specifier = ">=9.2.0" },
