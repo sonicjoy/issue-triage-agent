@@ -72,6 +72,20 @@ The bundled dataset, [sonicjoy/agent-flight-recorder](src/issue_triager/datasets
 
 Real failures seen so far: `gpt-5.4-nano` follows prompt injection in an issue body; `gemini-3.5-flash-lite` misses a regression after injected timeouts and invents one in its comment; `gpt-5.4-mini` confuses overlapping labels and suggests confident but wrong duplicates on a real repo.
 
+## Batches
+
+`triager batch PLAN` runs a matrix of triages, approving each, for a corpus a recorder can study. A plan (YAML) lists groups of runs: which cases (`real` or `synthetic`, optionally a `sample`), which `model` (and `comment_model`), how many `repeats`, tool failures to `inject` at a `rate`, and `pause_seconds` between runs for rate-limited providers. [batches/afr-corpus.yaml](batches/afr-corpus.yaml) is the corpus for Agent Flight Recorder's error analysis.
+
+```bash
+uv run triager batch batches/afr-corpus.yaml --dry-run                        # list the runs
+uv run triager batch batches/afr-corpus.yaml --record http://127.0.0.1:4318   # run and record them
+```
+
+- **Manifest:** each run is written to `runs/batch-<plan>.jsonl` as it finishes: case, model, repeat, seed, status, grade, cost and trace id. Running the batch again skips what's done and retries runs that ended in an error.
+- **Spend cap:** `budget_usd` in the plan, or `--budget`. The batch stops cleanly when it's reached, counting what the manifest already spent. With a cap, every model in the plan must have a price, or the plan is refused. A run that errors part-way isn't counted (its tokens are lost with the error), so leave some headroom.
+- **Errors, by type:** a rate limit or an overloaded provider backs off (15 s, doubling) and tries again, up to 6 times; each attempt is its own trace, marked `triager.batch.attempt`, and the manifest names the last. A spent daily quota, an account out of credit or a missing API key stops that provider's runs, and the other providers carry on. Any other error is recorded and the batch goes on. The command exits 1 if any run errored or a provider stopped.
+- **Grades on the trace:** with recording on, each run's root span gets its grade against the real triage: `triager.grade` (`correct`, `wrong` or `failed`) and `triager.grade.labels`, `.milestone`, `.duplicate_of` and `.regression_of` (`ok` or `wrong`). `triager run` adds them too. They're set after the triage ends and never reach the agent's prompt or its own spans.
+
 ## Other options
 
 | Option | Default | |
