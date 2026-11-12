@@ -1,0 +1,344 @@
+"""`triager batch` and grades on the trace (recorder #13), written before the code.
+
+Decisions (agent-flight-recorder/.review/13-corpus/plan.md):
+- a matrix of cases x models x repeats x injection, recorded, resumable;
+- each run's grade against the ground truth goes on its root span, never into the prompt;
+- a spend cap stops the batch cleanly;
+- Gemini runs are paced and back off on rate limits;
+- a local manifest records every run.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
+from test_recording import Collector, collector  # noqa: F401  (fixture)
+from test_triager import DATA, call, decide
+from test_triager import models as langgraph_models
+from typer.testing import CliRunner
+
+from issue_triager import cli
+
+REAL_19 = DATA.by_id["19"]
+
+
+def plan_text(**overrides: Any) -> str:
+    groups = overrides.pop("groups", None) or [
+        {"name": "real-main", "cases": "real", "model": "anthropic:claude-sonnet-5-5",
+         "repeats": 2},
+        {"name": "synthetic-cheap", "cases": "synthetic", "model": "anthropic:claude-haiku-5-5"},
+        {"name": "injected", "cases": "real", "sample": 5, "model": "anthropic:claude-sonnet-5-5",
+         "inject": ["timeout", "bad-data"], "rate": 0.5},
+        {"name": "gemini", "cases": "real", "model": "google_genai:gemini-3.5-flash-lite",
+         "pause_seconds": 4},
+    ]  # fmt: skip
+    return json.dumps({"budget_usd": 10, "groups": groups} | overrides)  # JSON is valid YAML
+
+
+def write_plan(tmp_path: Path, **overrides: Any) -> Path:
+    path = tmp_path / "plan.yaml"
+    path.write_text(plan_text(**overrides), encoding="utf-8")
+    return path
+
+
+# ---- grading ---------------------------------------------------------------------
+
+
+def test_grade_fields_compare_each_field_with_the_ground_truth() -> None:
+    from issue_triager.grading import grade_fields
+
+    truth = REAL_19.truth
+    right = {"labels": list(truth.labels), "milestone": truth.milestone,
+             "duplicate_of": truth.duplicate_of, "regression_of": truth.regression_of}  # fmt: skip
+    assert grade_fields(right, truth) == dict.fromkeys(
+        ("labels", "milestone", "duplicate_of", "regression_of"), True
+    )
+    wrong = right | {"labels": ["ui"], "duplicate_of": "#2"}
+    assert grade_fields(wrong, truth) == {"labels": False, "milestone": True,
+                                          "duplicate_of": truth.duplicate_of == "2",
+                                          "regression_of": True}  # fmt: skip
+
+
+def test_grade_attributes_say_correct_wrong_or_failed() -> None:
+    from issue_triager.grading import grade_attributes
+
+    truth = REAL_19.truth
+    right = {"labels": list(truth.labels), "milestone": truth.milestone,
+             "duplicate_of": truth.duplicate_of, "regression_of": truth.regression_of}  # fmt: skip
+
+    correct = grade_attributes({"status": "applied", "decision": right}, REAL_19)
+    assert correct["triager.grade"] == "correct"
+    assert correct["triager.grade.labels"] == "ok"
+    assert correct["triager.case_source"] == "real"
+
+    wrong = grade_attributes({"status": "applied", "decision": right | {"labels": []}}, REAL_19)
+    assert wrong["triager.grade"] == "wrong" and wrong["triager.grade.labels"] == "wrong"
+
+    failed = grade_attributes({"status": "failed", "decision": None}, REAL_19)
+    assert failed["triager.grade"] == "failed"
+    assert "triager.grade.labels" not in failed
+
+
+def test_the_root_span_carries_the_grade(
+    clean_env: pytest.MonkeyPatch,
+    tmp_path: Path,
+    collector: Collector,  # noqa: F811
+) -> None:
+    fake = langgraph_models(iter([call("search_issues", {"query": "evals"}), decide()]))
+    clean_env.setattr(cli, "resolve_models", lambda *a, **k: fake)
+    result = CliRunner().invoke(
+        cli.app,
+        ["run", "--issue", "19", "--yes", "--runs-dir", str(tmp_path), "--record", collector.url],
+    )
+
+    assert result.exit_code == 0, result.output
+    spans = [a for _, a in collector.spans()]
+    [root] = [a for a in spans if a["name"].startswith("triage ")]
+    assert root["triager.grade"] in ("correct", "wrong")
+    assert root["triager.grade.labels"] in ("ok", "wrong")
+    assert root["triager.triage_model"] == "openai:gpt-5.4-nano"
+    child_text = json.dumps([a for a in spans if a is not root])
+    assert "triager.grade" not in child_text  # the agent's own spans never see the truth
+
+
+# ---- the plan --------------------------------------------------------------------
+
+
+def test_the_plan_expands_to_jobs(tmp_path: Path) -> None:
+    from issue_triager.batch import load_plan, plan_jobs
+
+    jobs = plan_jobs(load_plan(write_plan(tmp_path)), DATA)
+    by_group: dict[str, list[Any]] = {}
+    for job in jobs:
+        by_group.setdefault(job.group.name, []).append(job)
+
+    assert len(by_group["real-main"]) == 2 * len(DATA.real)
+    assert len(by_group["synthetic-cheap"]) == len(DATA.synthetic)
+    assert len(by_group["injected"]) == 5
+    assert len(by_group["gemini"]) == len(DATA.real)
+    assert len({job.key for job in jobs}) == len(jobs)  # every job has its own key
+    assert plan_jobs(load_plan(write_plan(tmp_path)), DATA) == jobs  # the same every time
+
+
+@pytest.mark.parametrize(
+    ("group", "message"),
+    [
+        ({"name": "x", "cases": "all", "model": "anthropic:claude-haiku-5-5"}, "cases"),
+        ({"name": "x", "cases": "real"}, "model"),
+        (
+            {
+                "name": "x",
+                "cases": "real",
+                "model": "anthropic:claude-haiku-5-5",
+                "inject": ["meteor"],
+            },
+            "inject",
+        ),
+        ({"name": "x", "cases": "real", "model": "nonsense"}, "model"),
+    ],
+)
+def test_a_bad_plan_is_refused(tmp_path: Path, group: dict[str, Any], message: str) -> None:
+    from issue_triager.batch import PlanError, load_plan
+
+    with pytest.raises(PlanError, match=message):
+        load_plan(write_plan(tmp_path, groups=[group]))
+
+
+# ---- running ---------------------------------------------------------------------
+
+
+def fake_triage(
+    results: dict[str, Any] | None = None,
+) -> tuple[Callable[[Any], Any], list[str]]:
+    """A triage stand-in: returns an outcome per job, or raises what `results` says."""
+    from issue_triager.batch import Outcome
+
+    calls: list[str] = []
+
+    def triage(job: Any) -> Outcome:
+        calls.append(job.key)
+        planned = (results or {}).get(job.key)
+        if isinstance(planned, list) and planned:
+            raise planned.pop(0)
+        return Outcome(status="applied", grade="wrong" if job.case.id == "3" else "correct",
+                       cost_usd=0.01, trace_id=f"trace-{len(calls)}")  # fmt: skip
+
+    return triage, calls
+
+
+def small_jobs(tmp_path: Path, **group: Any) -> list[Any]:
+    from issue_triager.batch import load_plan, plan_jobs
+
+    spec = {"name": "g", "cases": "real", "model": "anthropic:claude-haiku-5-5",
+            "sample": 4} | group  # fmt: skip
+    return plan_jobs(load_plan(write_plan(tmp_path, groups=[spec])), DATA)
+
+
+def manifest_lines(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_every_run_is_written_to_the_manifest(tmp_path: Path) -> None:
+    from issue_triager.batch import run_batch
+
+    jobs = small_jobs(tmp_path)
+    triage, _ = fake_triage()
+    manifest = tmp_path / "manifest.jsonl"
+    summary = run_batch(jobs, triage, manifest=manifest, budget_usd=10, sleep=lambda s: None)
+
+    lines = manifest_lines(manifest)
+    assert [line["key"] for line in lines] == [job.key for job in jobs]
+    assert {"group", "case", "repeat", "model", "seed", "status", "grade", "cost_usd",
+            "trace_id"} <= set(lines[0])  # fmt: skip
+    assert summary.done == 4 and summary.stopped is None
+    assert summary.cost_usd == pytest.approx(0.04)
+
+
+def test_a_batch_resumes_where_it_stopped(tmp_path: Path) -> None:
+    from issue_triager.batch import run_batch
+
+    jobs = small_jobs(tmp_path)
+    manifest = tmp_path / "manifest.jsonl"
+    first, _ = fake_triage()
+    run_batch(jobs[:2], first, manifest=manifest, budget_usd=10, sleep=lambda s: None)
+
+    again, calls = fake_triage()
+    summary = run_batch(jobs, again, manifest=manifest, budget_usd=10, sleep=lambda s: None)
+
+    assert calls == [job.key for job in jobs[2:]]  # the first two aren't run again
+    assert summary.skipped == 2 and len(manifest_lines(manifest)) == 4
+
+
+def test_the_spend_cap_stops_the_batch_cleanly(tmp_path: Path) -> None:
+    from issue_triager.batch import run_batch
+
+    jobs = small_jobs(tmp_path)
+    triage, calls = fake_triage()
+    manifest = tmp_path / "manifest.jsonl"
+    summary = run_batch(jobs, triage, manifest=manifest, budget_usd=0.02, sleep=lambda s: None)
+
+    assert len(calls) == 2 and summary.stopped == "budget"
+    # spend already in the manifest counts on resume
+    again, more = fake_triage()
+    assert run_batch(jobs, again, manifest=manifest, budget_usd=0.02,
+                     sleep=lambda s: None).stopped == "budget"  # fmt: skip
+    assert more == []
+
+
+def test_rate_limits_back_off_and_retry(tmp_path: Path) -> None:
+    from issue_triager.batch import run_batch
+
+    class ResourceExhausted(Exception):
+        pass
+
+    jobs = small_jobs(tmp_path, sample=1)
+    errors = [ResourceExhausted("429 RESOURCE_EXHAUSTED: quota"), ResourceExhausted("429")]
+    triage, calls = fake_triage({jobs[0].key: errors})
+    waits: list[float] = []
+    run_batch(jobs, triage, manifest=tmp_path / "m.jsonl", budget_usd=10, sleep=waits.append)
+
+    assert len(calls) == 3  # two rate-limited attempts, then success
+    assert waits[0] < waits[1]  # backing off
+    assert manifest_lines(tmp_path / "m.jsonl")[0]["status"] == "applied"
+
+
+def test_other_errors_are_recorded_and_the_batch_goes_on(tmp_path: Path) -> None:
+    from issue_triager.batch import run_batch
+
+    jobs = small_jobs(tmp_path, sample=2)
+    triage, _ = fake_triage({jobs[0].key: [ValueError("bad response")]})
+    summary = run_batch(jobs, triage, manifest=tmp_path / "m.jsonl", budget_usd=10,
+                        sleep=lambda s: None)  # fmt: skip
+
+    lines = manifest_lines(tmp_path / "m.jsonl")
+    assert lines[0]["status"] == "error" and "bad response" in lines[0]["error"]
+    assert lines[1]["status"] == "applied" and summary.errors == 1
+    # errors are tried again on resume
+    again, retried = fake_triage()
+    run_batch(jobs, again, manifest=tmp_path / "m.jsonl", budget_usd=10, sleep=lambda s: None)
+    assert retried == [jobs[0].key]
+
+
+def test_paced_groups_pause_between_runs(tmp_path: Path) -> None:
+    from issue_triager.batch import run_batch
+
+    jobs = small_jobs(tmp_path, sample=3, pause_seconds=4)
+    triage, _ = fake_triage()
+    waits: list[float] = []
+    run_batch(jobs, triage, manifest=tmp_path / "m.jsonl", budget_usd=10, sleep=waits.append)
+
+    assert waits == [4, 4]  # between runs, not after the last
+
+
+def test_batch_command_records_each_run_and_its_grade(
+    clean_env: pytest.MonkeyPatch,
+    tmp_path: Path,
+    collector: Collector,  # noqa: F811
+) -> None:
+    def fake(*args: Any, **kwargs: Any) -> Any:
+        return langgraph_models(iter([call("search_issues", {"query": "x"}), decide()]))
+
+    clean_env.setattr(cli, "resolve_models", fake)
+    plan = write_plan(tmp_path, groups=[{"name": "g", "cases": "real", "sample": 2,
+                                         "model": "openai:gpt-5.4-nano"}])  # fmt: skip
+    manifest = tmp_path / "m.jsonl"
+    result = CliRunner().invoke(cli.app, ["batch", str(plan), "--manifest", str(manifest),
+                                          "--record", collector.url,
+                                          "--runs-dir", str(tmp_path)])  # fmt: skip
+
+    assert result.exit_code == 0, result.output
+    lines = manifest_lines(manifest)
+    roots = [s for s in collector.raw_spans() if not s.parent_span_id]
+    assert len(lines) == len(roots) == 2
+    assert {line["trace_id"] for line in lines} == {r.trace_id.hex() for r in roots}
+    assert "2 runs" in result.output and "$" in result.output
+
+
+def test_batch_dry_run_lists_jobs_without_running(tmp_path: Path) -> None:
+    result = CliRunner().invoke(cli.app, ["batch", str(write_plan(tmp_path)), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    total = 2 * len(DATA.real) + len(DATA.synthetic) + 5 + len(DATA.real)
+    assert f"{total} runs" in result.output
+
+
+def test_a_billing_error_stops_the_batch(tmp_path: Path) -> None:
+    """Out of credit, every later run would fail too: stop instead of burning through them."""
+    from issue_triager.batch import run_batch
+
+    class AnthropicInvalidRequestError(Exception):
+        pass
+
+    jobs = small_jobs(tmp_path, sample=3)
+    broke = AnthropicInvalidRequestError("Error code: 400 - Your credit balance is too low")
+    triage, calls = fake_triage({jobs[0].key: [broke]})
+    summary = run_batch(jobs, triage, manifest=tmp_path / "m.jsonl", budget_usd=10,
+                        sleep=lambda s: None)  # fmt: skip
+
+    assert calls == [jobs[0].key] and summary.stopped == "billing"
+    assert manifest_lines(tmp_path / "m.jsonl")[0]["status"] == "error"
+
+
+def test_a_run_that_errors_still_records_its_trace_id(
+    clean_env: pytest.MonkeyPatch,
+    tmp_path: Path,
+    collector: Collector,  # noqa: F811
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("provider unavailable")
+
+    clean_env.setattr(cli, "resolve_models", lambda *a, **k: langgraph_models(iter([decide()])))
+    clean_env.setattr(cli, "run_langgraph", broken)
+    plan = write_plan(tmp_path, groups=[{"name": "g", "cases": "real", "sample": 1,
+                                         "model": "openai:gpt-5.4-nano"}])  # fmt: skip
+    manifest = tmp_path / "m.jsonl"
+    args = ["batch", str(plan), "--manifest", str(manifest), "--record", collector.url]
+    CliRunner().invoke(cli.app, [*args, "--runs-dir", str(tmp_path)])
+
+    [line] = manifest_lines(manifest)
+    [root] = [s for s in collector.raw_spans() if not s.parent_span_id]
+    assert line["status"] == "error" and line["trace_id"] == root.trace_id.hex()

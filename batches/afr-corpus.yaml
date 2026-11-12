@@ -1,0 +1,35 @@
+# The run corpus for Agent Flight Recorder's error analysis (agent-flight-recorder #13).
+#
+#   uv run triager batch batches/afr-corpus.yaml --record http://127.0.0.1:4318
+#
+# About 200 runs: every real issue twice on the main model and once on Gemini's free tier,
+# every synthetic case once on the cheap model (smaller models fail more), and 30 runs with
+# tool failures injected. Stops at the spend cap; run it again to carry on.
+
+budget_usd: 10
+
+groups:
+  - name: real-sonnet
+    cases: real
+    model: anthropic:claude-sonnet-5-5
+    comment_model: anthropic:claude-haiku-5-5
+    repeats: 2
+
+  - name: synthetic-haiku
+    cases: synthetic
+    model: anthropic:claude-haiku-5-5
+
+  - name: injected-sonnet
+    cases: real
+    sample: 30
+    model: anthropic:claude-sonnet-5-5
+    comment_model: anthropic:claude-haiku-5-5
+    inject: [timeout, bad-data, empty, noise]
+    rate: 0.3
+
+  # Free tier: one run every 30 s keeps a run's 3-6 calls well under its per-minute limit;
+  # rate-limited calls back off and retry.
+  - name: real-gemini
+    cases: real
+    model: google_genai:gemini-3.5-flash-lite
+    pause_seconds: 30
