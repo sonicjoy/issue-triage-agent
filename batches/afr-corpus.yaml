@@ -5,25 +5,28 @@
 # About 200 runs: every real issue twice on the main model and once on Gemini's free tier,
 # every synthetic case once on the cheap model (smaller models fail more), and 30 runs with
 # tool failures injected. Stops at the spend cap; run it again to carry on.
+#
+# OpenAI rather than Anthropic for the paid runs: no Anthropic credit was available. The
+# Gemini group ran first and is unchanged, so its runs stay done in the manifest.
 
 budget_usd: 10
 
 groups:
-  - name: real-sonnet
+  - name: real-mini
     cases: real
-    model: anthropic:claude-sonnet-5-5
-    comment_model: anthropic:claude-haiku-5-5
+    model: openai:gpt-5.4-mini
+    comment_model: openai:gpt-5.4-nano
     repeats: 2
 
-  - name: synthetic-haiku
+  - name: synthetic-nano
     cases: synthetic
-    model: anthropic:claude-haiku-5-5
+    model: openai:gpt-5.4-nano
 
-  - name: injected-sonnet
+  - name: injected-mini
     cases: real
     sample: 30
-    model: anthropic:claude-sonnet-5-5
-    comment_model: anthropic:claude-haiku-5-5
+    model: openai:gpt-5.4-mini
+    comment_model: openai:gpt-5.4-nano
     inject: [timeout, bad-data, empty, noise]
     rate: 0.3
 
