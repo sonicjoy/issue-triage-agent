@@ -585,3 +585,15 @@ def test_a_503_is_retried_and_openai_out_of_quota_stops_the_provider() -> None:
     assert classify(Unavailable("The model is overloaded."))[0] == "retry"
     quota = OpenAIRateLimitError("Error code: 429 - {'error': {'code': 'insufficient_quota'}}")
     assert classify(quota) == ("stop", "billing")
+
+
+def test_a_real_google_503_is_retried() -> None:
+    """The real GoogleAPIError keeps its status in `code`, not `status_code`."""
+    from langchain_google_genai.chat_models import GoogleAPIError
+
+    from issue_triager.batch import classify
+
+    body = {"error": {"code": 503, "status": "UNAVAILABLE",
+                      "message": "This model is currently experiencing high demand."}}  # fmt: skip
+    error = GoogleAPIError(code=503, response_json=body, response=None)
+    assert classify(error)[0] == "retry"
