@@ -561,3 +561,27 @@ def test_a_run_that_errors_still_records_its_trace_id(
     [line] = manifest_lines(manifest)
     [root] = [s for s in collector.raw_spans() if not s.parent_span_id]
     assert line["status"] == "error" and line["trace_id"] == root.trace_id.hex()
+
+
+def test_a_budget_given_on_the_command_line_is_checked_like_the_plans(tmp_path: Path) -> None:
+    plan = write_plan(tmp_path, budget_usd=None,
+                      groups=[{"name": "x", "cases": "real",
+                               "model": "anthropic:claude-unknown-1"}])  # fmt: skip
+    priced = CliRunner().invoke(cli.app, ["batch", str(plan), "--budget", "5", "--dry-run"])
+    assert priced.exit_code == 2 and "price" in priced.output
+    nan = CliRunner().invoke(cli.app, ["batch", str(write_plan(tmp_path)), "--budget", "nan"])
+    assert nan.exit_code == 2 and "budget" in nan.output
+
+
+def test_a_503_is_retried_and_openai_out_of_quota_stops_the_provider() -> None:
+    from issue_triager.batch import classify
+
+    class Unavailable(Exception):
+        status_code = 503
+
+    class OpenAIRateLimitError(Exception):
+        status_code = 429
+
+    assert classify(Unavailable("The model is overloaded."))[0] == "retry"
+    quota = OpenAIRateLimitError("Error code: 429 - {'error': {'code': 'insufficient_quota'}}")
+    assert classify(quota) == ("stop", "billing")

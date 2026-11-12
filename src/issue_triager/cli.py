@@ -325,6 +325,7 @@ def batch(
         Outcome,
         PlanError,
         RunError,
+        check_budget,
         load_plan,
         plan_jobs,
         run_batch,
@@ -341,6 +342,12 @@ def batch(
     data = load_dataset(dataset)
     jobs = plan_jobs(loaded, data)
     cap = budget if budget is not None else loaded.budget_usd
+    if budget is not None:
+        try:
+            check_budget(loaded.groups, budget)
+        except PlanError as error:
+            typer.echo(f"error: {error}")
+            raise typer.Exit(2) from error
     target_manifest = manifest or runs_dir / f"batch-{plan.stem}.jsonl"
     by_group: dict[str, int] = {}
     for job in jobs:

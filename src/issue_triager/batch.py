@@ -6,8 +6,9 @@ rate-limited providers. Each run is written to a manifest (JSON lines) as it fin
 batch that stops (budget, Ctrl+C, a crash) carries on where it left off. Runs that ended in
 an error are tried again on resume.
 
-Errors are classified by type, not by message text (Gemini's per-minute 429 mentions
-"billing details"):
+Errors are classified mostly by type and status code, since message text misleads (Gemini's
+per-minute 429 mentions "billing details"); only the out-of-credit and daily-quota markers
+are read from the text:
 - a rate limit (`ModelRateLimitError`) or an overloaded provider backs off and tries again;
 - a spent daily quota, an account out of credit, or a missing API key stops that provider's
   runs, since every later one would fail the same way; other providers carry on;
@@ -38,8 +39,8 @@ from issue_triager.tools import FAILURE_MODES, FailureMode
 CaseSet = Literal["real", "synthetic"]
 MAX_TRIES = 6  # attempts per run while rate-limited
 FIRST_BACKOFF = 15.0  # seconds; doubles each time
-OVERLOADED = 529  # Anthropic's "overloaded" status: try again later
-OUT_OF_CREDIT = "credit balance is too low"  # Anthropic's 400 when the account is empty
+RETRY_STATUSES = (503, 529)  # unavailable, and Anthropic's "overloaded": try again later
+OUT_OF_CREDIT = ("credit balance is too low", "insufficient_quota")  # Anthropic, OpenAI
 DAILY_QUOTA = "perday"  # in Gemini's quota id: GenerateRequestsPerDayPerProjectPerModel
 
 Triage = Callable[["Job", int], "Outcome"]  # a job and its attempt number (from 1)
@@ -128,17 +129,22 @@ def load_plan(path: Path) -> Plan:
     if len({g.name for g in groups}) != len(groups):
         raise PlanError("group names must be unique")
     budget = plan.get("budget_usd")
-    if budget is not None and not (isinstance(budget, int | float) and math.isfinite(budget)):
-        raise PlanError(f"budget_usd must be a number, not {budget!r}")
     if budget is not None:
-        for group in groups:
-            for spec in (group.model, group.comment_model):
-                if spec is not None and cost_usd(spec, 1, 1) is None:
-                    raise PlanError(
-                        f"group {group.name}: {spec} has no price in pricing.yaml, so the "
-                        "budget can't count it"
-                    )
+        check_budget(groups, budget)
     return Plan(groups, float(budget) if budget is not None else None)
+
+
+def check_budget(groups: Sequence[Group], budget: object) -> None:
+    """A cap must be a number, and every model must have a price, or the cap can't count it."""
+    if not (isinstance(budget, int | float) and math.isfinite(budget)):
+        raise PlanError(f"budget_usd must be a number, not {budget!r}")
+    for group in groups:
+        for spec in (group.model, group.comment_model):
+            if spec is not None and cost_usd(spec, 1, 1) is None:
+                raise PlanError(
+                    f"group {group.name}: {spec} has no price in pricing.yaml, so the "
+                    "budget can't count it"
+                )
 
 
 def _group(raw: dict[str, Any]) -> Group:
@@ -205,12 +211,12 @@ def classify(error: BaseException) -> tuple[Kind, str | None]:
     if isinstance(error, MissingCredentialsError):
         return "stop", "credentials"
     text = str(error).lower()
+    if any(sign in text for sign in OUT_OF_CREDIT):  # before rate limits: OpenAI's is a 429
+        return "stop", "billing"
     if isinstance(error, ModelRateLimitError):
         return ("stop", "daily quota") if DAILY_QUOTA in text.replace(" ", "") else ("retry", None)
-    if getattr(error, "status_code", None) == OVERLOADED:
+    if getattr(error, "status_code", None) in RETRY_STATUSES:
         return "retry", None
-    if OUT_OF_CREDIT in text:
-        return "stop", "billing"
     return "error", None
 
 
