@@ -153,13 +153,13 @@ def test_a_bad_plan_is_refused(tmp_path: Path, group: dict[str, Any], message: s
 
 def fake_triage(
     results: dict[str, Any] | None = None,
-) -> tuple[Callable[[Any], Any], list[str]]:
+) -> tuple[Callable[[Any, int], Any], list[str]]:
     """A triage stand-in: returns an outcome per job, or raises what `results` says."""
     from issue_triager.batch import Outcome
 
     calls: list[str] = []
 
-    def triage(job: Any) -> Outcome:
+    def triage(job: Any, attempt: int = 1) -> Outcome:
         calls.append(job.key)
         planned = (results or {}).get(job.key)
         if isinstance(planned, list) and planned:
@@ -229,14 +229,24 @@ def test_the_spend_cap_stops_the_batch_cleanly(tmp_path: Path) -> None:
     assert more == []
 
 
+GEMINI_429 = (
+    "Error calling model 'gemini-3.5-flash-lite' (RESOURCE_EXHAUSTED): 429 RESOURCE_EXHAUSTED. "
+    "{'error': {'code': 429, 'message': 'You exceeded your current quota, please check your "
+    "plan and billing details. Quota exceeded for metric: "
+    "generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15, "
+    "quotaId: GenerateRequestsPerMinutePerProjectPerModel-FreeTier. Please retry in 21s.'}}"
+)
+GEMINI_DAILY = GEMINI_429.replace("PerMinute", "PerDay").replace("limit: 15", "limit: 1000")
+
+
 def test_rate_limits_back_off_and_retry(tmp_path: Path) -> None:
+    """Gemini's per-minute 429 mentions billing; it's still a rate limit, not out of credit."""
+    from langchain_google_genai.chat_models import GoogleRateLimitError
+
     from issue_triager.batch import run_batch
 
-    class ResourceExhausted(Exception):
-        pass
-
     jobs = small_jobs(tmp_path, sample=1)
-    errors = [ResourceExhausted("429 RESOURCE_EXHAUSTED: quota"), ResourceExhausted("429")]
+    errors = [GoogleRateLimitError(GEMINI_429), GoogleRateLimitError(GEMINI_429)]
     triage, calls = fake_triage({jobs[0].key: errors})
     waits: list[float] = []
     run_batch(jobs, triage, manifest=tmp_path / "m.jsonl", budget_usd=10, sleep=waits.append)
@@ -295,7 +305,73 @@ def test_batch_command_records_each_run_and_its_grade(
     roots = [s for s in collector.raw_spans() if not s.parent_span_id]
     assert len(lines) == len(roots) == 2
     assert {line["trace_id"] for line in lines} == {r.trace_id.hex() for r in roots}
-    assert "2 runs" in result.output and "$" in result.output
+    for root in roots:
+        attrs = {a.key: a.value.string_value for a in root.attributes}
+        assert attrs["triager.grade"] in ("correct", "wrong")
+        assert attrs["triager.grade.labels"] in ("ok", "wrong")
+        assert attrs["triager.batch.group"] == "g" and attrs["triager.batch.attempt"] == "1"
+    assert {line["grade"] for line in lines} <= {"correct", "wrong"}
+    assert "done:    2 runs" in result.output
+
+
+def test_each_attempt_is_its_own_trace_and_the_manifest_names_the_last(
+    clean_env: pytest.MonkeyPatch,
+    tmp_path: Path,
+    collector: Collector,  # noqa: F811
+) -> None:
+    from langchain_google_genai.chat_models import GoogleRateLimitError
+
+    attempts = iter([GoogleRateLimitError(GEMINI_429), None])
+    real_run = cli.run_langgraph
+
+    def flaky(*args: Any, **kwargs: Any) -> Any:
+        if (error := next(attempts)) is not None:
+            raise error  # inside the root span, as a real model call would
+        return real_run(*args, **kwargs)
+
+    def fake(*args: Any, **kwargs: Any) -> Any:
+        return langgraph_models(iter([call("search_issues", {"query": "x"}), decide()]))
+
+    clean_env.setattr(cli, "resolve_models", fake)
+    clean_env.setattr(cli, "run_langgraph", flaky)
+    clean_env.setattr("issue_triager.batch.FIRST_BACKOFF", 0.0)
+    gemini = {
+        "name": "g",
+        "cases": "real",
+        "sample": 1,
+        "model": "google_genai:gemini-3.5-flash-lite",
+    }
+    plan = write_plan(tmp_path, groups=[gemini])
+    manifest = tmp_path / "m.jsonl"
+    args = ["batch", str(plan), "--manifest", str(manifest), "--record", collector.url]
+    result = CliRunner().invoke(cli.app, [*args, "--runs-dir", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    roots = [s for s in collector.raw_spans() if not s.parent_span_id]
+    by_attempt = {
+        next(a.value.string_value for a in r.attributes if a.key == "triager.batch.attempt"): r
+        for r in roots
+    }
+    [line] = manifest_lines(manifest)
+    assert set(by_attempt) == {"1", "2"}
+    assert line["trace_id"] == by_attempt["2"].trace_id.hex()
+
+
+def test_batch_exits_nonzero_when_runs_fail_or_a_provider_stops(
+    clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("provider unavailable")
+
+    clean_env.setattr(cli, "resolve_models", broken)
+    plan = write_plan(tmp_path, groups=[{"name": "g", "cases": "real", "sample": 1,
+                                         "model": "openai:gpt-5.4-nano"}])  # fmt: skip
+    result = CliRunner().invoke(cli.app, ["batch", str(plan), "--manifest",
+                                          str(tmp_path / "m.jsonl")])  # fmt: skip
+    assert result.exit_code == 1
+    missing = CliRunner().invoke(cli.app, ["batch", str(plan), "--dataset",
+                                           str(tmp_path / "nowhere")])  # fmt: skip
+    assert missing.exit_code == 2 and "no dataset" in missing.output
 
 
 def test_batch_dry_run_lists_jobs_without_running(tmp_path: Path) -> None:
@@ -306,21 +382,164 @@ def test_batch_dry_run_lists_jobs_without_running(tmp_path: Path) -> None:
     assert f"{total} runs" in result.output
 
 
-def test_a_billing_error_stops_the_batch(tmp_path: Path) -> None:
-    """Out of credit, every later run would fail too: stop instead of burning through them."""
+def two_providers(tmp_path: Path) -> list[Any]:
+    from issue_triager.batch import load_plan, plan_jobs
+
+    groups = [
+        {"name": "a", "cases": "real", "sample": 3, "model": "anthropic:claude-haiku-5-5"},
+        {"name": "g", "cases": "real", "sample": 2, "model": "google_genai:gemini-3.5-flash-lite"},
+    ]
+    return plan_jobs(load_plan(write_plan(tmp_path, groups=groups)), DATA)
+
+
+def anthropic_out_of_credit() -> Exception:
+    import httpx
+    from langchain_anthropic.chat_models import AnthropicInvalidRequestError
+
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(400, request=request)
+    body = {"type": "error", "error": {"type": "invalid_request_error",
+            "message": "Your credit balance is too low to access the Anthropic API."}}  # fmt: skip
+    return AnthropicInvalidRequestError(
+        "Error code: 400 - " + str(body),
+        response=response,  # pyright: ignore[reportArgumentType]  # SDK types a newer httpx
+        body=body,
+    )
+
+
+def test_a_billing_error_stops_only_that_provider(tmp_path: Path) -> None:
+    """Out of credit, every later run on that provider would fail too; the others go on."""
     from issue_triager.batch import run_batch
 
-    class AnthropicInvalidRequestError(Exception):
-        pass
-
-    jobs = small_jobs(tmp_path, sample=3)
-    broke = AnthropicInvalidRequestError("Error code: 400 - Your credit balance is too low")
-    triage, calls = fake_triage({jobs[0].key: [broke]})
+    jobs = two_providers(tmp_path)
+    triage, calls = fake_triage({jobs[0].key: [anthropic_out_of_credit()]})
     summary = run_batch(jobs, triage, manifest=tmp_path / "m.jsonl", budget_usd=10,
                         sleep=lambda s: None)  # fmt: skip
 
-    assert calls == [jobs[0].key] and summary.stopped == "billing"
+    assert calls == [jobs[0].key, jobs[3].key, jobs[4].key]  # Anthropic stops, Gemini runs
+    assert summary.provider_stops == {"anthropic": "billing"}
     assert manifest_lines(tmp_path / "m.jsonl")[0]["status"] == "error"
+
+
+def test_a_spent_daily_quota_stops_only_that_provider(tmp_path: Path) -> None:
+    from langchain_google_genai.chat_models import GoogleRateLimitError
+
+    from issue_triager.batch import run_batch
+
+    jobs = two_providers(tmp_path)
+    triage, calls = fake_triage({jobs[3].key: [GoogleRateLimitError(GEMINI_DAILY)]})
+    waits: list[float] = []
+    summary = run_batch(jobs, triage, manifest=tmp_path / "m.jsonl", budget_usd=10,
+                        sleep=waits.append)  # fmt: skip
+
+    assert calls == [j.key for j in jobs[:4]] and waits == []  # no hopeless backoff
+    assert summary.provider_stops == {"google_genai": "daily quota"}
+
+
+def test_overloaded_is_retried_but_other_errors_with_429_in_them_are_not(
+    tmp_path: Path,
+) -> None:
+    import httpx
+    from langchain_anthropic.chat_models import AnthropicOverloadedError
+
+    from issue_triager.batch import run_batch
+
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    overloaded = AnthropicOverloadedError(
+        "Overloaded",
+        response=httpx.Response(529, request=request),  # pyright: ignore[reportArgumentType]
+        body=None,
+    )
+    jobs = small_jobs(tmp_path, sample=2)
+    triage, calls = fake_triage({
+        jobs[0].key: [overloaded],
+        jobs[1].key: [ValueError("prompt is 204291 tokens, too long")],
+    })  # fmt: skip
+    run_batch(jobs, triage, manifest=tmp_path / "m.jsonl", budget_usd=10, sleep=lambda s: None)
+
+    assert calls == [jobs[0].key, jobs[0].key, jobs[1].key]
+    assert [line["status"] for line in manifest_lines(tmp_path / "m.jsonl")] == ["applied", "error"]
+
+
+def test_missing_credentials_stop_that_provider(tmp_path: Path) -> None:
+    from flight_recorder.llm import MissingCredentialsError
+
+    from issue_triager.batch import run_batch
+
+    jobs = two_providers(tmp_path)
+    no_key = MissingCredentialsError("google_genai needs GOOGLE_API_KEY")
+    triage, calls = fake_triage({jobs[3].key: [no_key]})
+    summary = run_batch(jobs, triage, manifest=tmp_path / "m.jsonl", budget_usd=10,
+                        sleep=lambda s: None)  # fmt: skip
+
+    assert calls == [j.key for j in jobs[:4]]
+    assert summary.provider_stops == {"google_genai": "credentials"}
+
+
+def test_a_truncated_last_manifest_line_is_ignored(tmp_path: Path) -> None:
+    from issue_triager.batch import run_batch
+
+    jobs = small_jobs(tmp_path, sample=2)
+    manifest = tmp_path / "m.jsonl"
+    first, _ = fake_triage()
+    run_batch(jobs[:1], first, manifest=manifest, budget_usd=10, sleep=lambda s: None)
+    with manifest.open("a", encoding="utf-8") as file:
+        file.write('{"key": "g:anthropic')  # a crash mid-write
+
+    again, calls = fake_triage()
+    run_batch(jobs, again, manifest=manifest, budget_usd=10, sleep=lambda s: None)
+    assert calls == [jobs[1].key]
+
+
+def test_the_manifest_key_includes_the_model(tmp_path: Path) -> None:
+    """Changing a group's model makes new runs, not 'already done'."""
+    haiku = small_jobs(tmp_path, sample=1)
+    sonnet = small_jobs(tmp_path, sample=1, model="anthropic:claude-sonnet-5-5")
+    assert haiku[0].key != sonnet[0].key and "claude-haiku-5-5" in haiku[0].key
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"groups": [{"name": "x", "cases": "real", "model": "anthropic:claude-unknown-1"}]},
+         "price"),
+        ({"groups": [{"name": "x", "cases": "real", "model": "anthropic:claude-haiku-5-5",
+                      "rate": 1.5}]}, "rate"),
+        ({"budget_usd": float("nan")}, "budget"),
+    ],
+)  # fmt: skip
+def test_plans_that_would_break_the_cap_are_refused(
+    tmp_path: Path, overrides: dict[str, Any], message: str
+) -> None:
+    from issue_triager.batch import PlanError, load_plan
+
+    with pytest.raises(PlanError, match=message):
+        load_plan(write_plan(tmp_path, **overrides))
+
+
+def test_the_corpus_plan_is_the_agreed_mix() -> None:
+    from issue_triager.batch import load_plan, plan_jobs
+
+    plan = load_plan(Path(__file__).parents[1] / "batches" / "afr-corpus.yaml")
+    counts: dict[str, int] = {}
+    for job in plan_jobs(plan, DATA):
+        counts[job.group.name] = counts.get(job.group.name, 0) + 1
+    real, synthetic = len(DATA.real), len(DATA.synthetic)
+    assert counts == {"real-sonnet": 2 * real, "synthetic-haiku": synthetic,
+                      "injected-sonnet": 30, "real-gemini": real}  # fmt: skip
+    assert plan.budget_usd == 10
+
+
+def test_a_rejected_run_is_still_graded() -> None:
+    from issue_triager.grading import grade_attributes
+
+    truth = REAL_19.truth
+    right = {"labels": list(truth.labels), "milestone": truth.milestone,
+             "duplicate_of": truth.duplicate_of, "regression_of": truth.regression_of}  # fmt: skip
+    assert (
+        grade_attributes({"status": "rejected", "decision": right}, REAL_19)["triager.grade"]
+        == "correct"
+    )
 
 
 def test_a_run_that_errors_still_records_its_trace_id(

@@ -109,17 +109,10 @@ def usage_cost(usage: list[Usage]) -> float | None:
 
 
 def report_usage(usage: list[Usage]) -> str:
-    total = 0.0
-    priced = True
-    for row in usage:
-        cost = cost_usd(row["model"], row["input_tokens"], row["output_tokens"])
-        if cost is None:
-            priced = False
-        else:
-            total += cost
+    total = usage_cost(usage)
     tokens_in = sum(r["input_tokens"] for r in usage)
     tokens_out = sum(r["output_tokens"] for r in usage)
-    cost_text = f"${total:.6f}" if priced else "unknown (unpriced model)"
+    cost_text = f"${total:.6f}" if total is not None else "unknown (unpriced model)"
     return f"tokens:  {tokens_in} in / {tokens_out} out   cost: {cost_text}"
 
 
@@ -131,6 +124,18 @@ def show_review(state: dict[str, Any], case: TriageCase) -> None:
     typer.echo(f"decision: {decision}")
     typer.echo(f"vs truth: {grade(decision, case.truth)}")
     typer.echo(f"comment:\n{state.get('comment', '')}\n")
+
+
+def finish_root(
+    recording: Recording | None, span: Any, state: dict[str, Any], case: TriageCase, model: str
+) -> dict[str, str]:
+    """Put the grade on the run's root span and say how it ended; returns the grade."""
+    grades = grade_attributes(state, case)
+    if recording is not None and span is not None:
+        span.set_attributes(grades | {"triager.triage_model": model})
+        failed = state.get("status") == "failed"
+        recording.finish(span, failed="failed validation" if failed else None)
+    return grades
 
 
 def ask(state: dict[str, Any], case: TriageCase, *, yes: bool) -> bool:
@@ -245,11 +250,7 @@ def run(
                     trace_upload_key=upload_key.get_secret_value() if upload_key else None,
                 )  # fmt: skip
             failed = state.get("status") == "failed"
-            if recording is not None and span is not None:
-                span.set_attributes(
-                    grade_attributes(state, case) | {"triager.triage_model": models.triage_spec}
-                )
-                recording.finish(span, failed="failed validation" if failed else None)
+            finish_root(recording, span, state, case, models.triage_spec)
     except Exception as error:  # provider and network errors: one clear line
         first_line = str(error).splitlines()[0] if str(error) else ""
         typer.echo(f"error: {type(error).__name__}: {first_line}")
@@ -334,6 +335,9 @@ def batch(
     except (OSError, PlanError) as error:
         typer.echo(f"error: {error}")
         raise typer.Exit(2) from error
+    if not (dataset / "issues.json").exists():
+        typer.echo(f"no dataset at {dataset}; create one with `triager export OWNER/NAME`")
+        raise typer.Exit(2)
     data = load_dataset(dataset)
     jobs = plan_jobs(loaded, data)
     cap = budget if budget is not None else loaded.budget_usd
@@ -359,7 +363,7 @@ def batch(
             raise typer.Exit(2) from error
         typer.echo(f"record:  traces to {shown(recording.url)}")
 
-    def triage(job: Job) -> Outcome:
+    def triage(job: Job, attempt: int) -> Outcome:
         models = resolve_models(
             job.group.model, job.group.comment_model, cheap=False, settings=settings
         )
@@ -370,6 +374,7 @@ def batch(
             "triager.engine": "langgraph",
             "triager.batch.group": job.group.name,
             "triager.batch.repeat": str(job.repeat),
+            "triager.batch.attempt": str(attempt),  # a retried run leaves one trace per attempt
             "triager.inject": ",".join(job.group.inject),
         }
         root = (
@@ -383,11 +388,7 @@ def batch(
                 if recording is not None and span is not None:
                     trace_id = format(span.get_span_context().trace_id, "032x")
                 state = run_langgraph(job.case, data, models, injector, yes=True, runs_dir=runs_dir)
-                failed = state.get("status") == "failed"
-                grades = grade_attributes(state, job.case)
-                if recording is not None and span is not None:
-                    span.set_attributes(grades | {"triager.triage_model": models.triage_spec})
-                    recording.finish(span, failed="failed validation" if failed else None)
+                grades = finish_root(recording, span, state, job.case, models.triage_spec)
         except Exception as error:  # the root span has recorded it; keep its trace id
             raise RunError(error, trace_id) from error
         return Outcome(
@@ -418,5 +419,14 @@ def batch(
     )
     if summary.stopped == "budget":
         typer.echo("stopped: the spend cap was reached; raise --budget and run again to go on")
-    elif summary.stopped == "billing":
-        typer.echo("stopped: the provider says the account is out of credit; top up and run again")
+    why = {
+        "billing": "the account is out of credit; top up",
+        "daily quota": "its daily quota is spent; wait a day",
+        "credentials": "its API key isn't set",
+    }
+    for provider, reason in summary.provider_stops.items():
+        typer.echo(f"stopped: {provider}: {why.get(reason, reason)}, then run again to go on")
+    if summary.not_run:
+        typer.echo(f"not run: {summary.not_run} runs on stopped providers")
+    if summary.errors or summary.provider_stops:
+        raise typer.Exit(1)

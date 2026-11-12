@@ -5,21 +5,32 @@ model, how many repeats, which tool failures to inject, and a pause between runs
 rate-limited providers. Each run is written to a manifest (JSON lines) as it finishes, so a
 batch that stops (budget, Ctrl+C, a crash) carries on where it left off. Runs that ended in
 an error are tried again on resume.
+
+Errors are classified by type, not by message text (Gemini's per-minute 429 mentions
+"billing details"):
+- a rate limit (`ModelRateLimitError`) or an overloaded provider backs off and tries again;
+- a spent daily quota, an account out of credit, or a missing API key stops that provider's
+  runs, since every later one would fail the same way; other providers carry on;
+- anything else is recorded as an error, and the batch goes on.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 import time
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import yaml
-from flight_recorder.llm import ModelSpecError, parse_spec
+from flight_recorder.llm import MissingCredentialsError, ModelSpecError, parse_spec
+from flight_recorder.pricing import cost_usd
+from langchain_core.exceptions import ModelRateLimitError
 
 from issue_triager.dataset import Dataset, TriageCase
 from issue_triager.tools import FAILURE_MODES, FailureMode
@@ -27,11 +38,11 @@ from issue_triager.tools import FAILURE_MODES, FailureMode
 CaseSet = Literal["real", "synthetic"]
 MAX_TRIES = 6  # attempts per run while rate-limited
 FIRST_BACKOFF = 15.0  # seconds; doubles each time
-RATE_LIMIT_SIGNS = ("429", "rate limit", "ratelimit", "resource_exhausted", "resourceexhausted",
-                    "quota")  # fmt: skip
+OVERLOADED = 529  # Anthropic's "overloaded" status: try again later
+OUT_OF_CREDIT = "credit balance is too low"  # Anthropic's 400 when the account is empty
+DAILY_QUOTA = "perday"  # in Gemini's quota id: GenerateRequestsPerDayPerProjectPerModel
 
-
-BILLING_SIGNS = ("credit balance", "insufficient_quota", "billing", "payment required")
+Triage = Callable[["Job", int], "Outcome"]  # a job and its attempt number (from 1)
 
 
 class PlanError(ValueError):
@@ -59,6 +70,10 @@ class Group:
     rate: float = 0.3
     pause_seconds: float = 0.0
 
+    @property
+    def provider(self) -> str:
+        return parse_spec(self.model).provider
+
 
 @dataclass(frozen=True)
 class Plan:
@@ -75,7 +90,8 @@ class Job:
 
     @property
     def key(self) -> str:
-        return f"{self.group.name}:{self.case.id}:{self.repeat}"
+        """Unique per group, model, case and repeat: a changed model means new runs."""
+        return f"{self.group.name}:{self.group.model}:{self.case.id}:{self.repeat}"
 
 
 @dataclass(frozen=True)
@@ -94,8 +110,12 @@ class Summary:
     skipped: int = 0
     errors: int = 0
     cost_usd: float = 0.0
-    grades: dict[str, int] = field(default_factory=lambda: {})
-    stopped: str | None = None  # "budget" or "billing"; None if every job ran
+    grades: Counter[str] = field(default_factory=lambda: Counter[str]())
+    stopped: str | None = None  # "budget"; None if it got through the plan
+    provider_stops: dict[str, str] = field(default_factory=lambda: {})
+    """Providers whose remaining runs were skipped: billing, daily quota or credentials."""
+    not_run: int = 0
+    """Runs skipped because their provider stopped."""
 
 
 def load_plan(path: Path) -> Plan:
@@ -108,6 +128,16 @@ def load_plan(path: Path) -> Plan:
     if len({g.name for g in groups}) != len(groups):
         raise PlanError("group names must be unique")
     budget = plan.get("budget_usd")
+    if budget is not None and not (isinstance(budget, int | float) and math.isfinite(budget)):
+        raise PlanError(f"budget_usd must be a number, not {budget!r}")
+    if budget is not None:
+        for group in groups:
+            for spec in (group.model, group.comment_model):
+                if spec is not None and cost_usd(spec, 1, 1) is None:
+                    raise PlanError(
+                        f"group {group.name}: {spec} has no price in pricing.yaml, so the "
+                        "budget can't count it"
+                    )
     return Plan(groups, float(budget) if budget is not None else None)
 
 
@@ -131,6 +161,9 @@ def _group(raw: dict[str, Any]) -> Group:
     unknown = [mode for mode in inject if mode not in FAILURE_MODES]
     if unknown:
         raise PlanError(f"group {name}: unknown inject {unknown}; choose from {FAILURE_MODES}")
+    rate = float(raw.get("rate", 0.3))
+    if not 0 <= rate <= 1:
+        raise PlanError(f"group {name}: rate must be between 0 and 1, not {rate}")
     return Group(
         name=name,
         cases=cast("CaseSet", cases),
@@ -139,7 +172,7 @@ def _group(raw: dict[str, Any]) -> Group:
         repeats=int(raw.get("repeats", 1)),
         sample=int(raw["sample"]) if raw.get("sample") is not None else None,
         inject=cast("tuple[FailureMode, ...]", inject),
-        rate=float(raw.get("rate", 0.3)),
+        rate=rate,
         pause_seconds=float(raw.get("pause_seconds", 0)),
     )
 
@@ -164,35 +197,42 @@ def plan_jobs(plan: Plan, data: Dataset) -> list[Job]:
     return jobs
 
 
-def _signs(error: BaseException, signs: Sequence[str]) -> bool:
-    text = f"{type(error).__name__} {error}".lower()
-    return any(sign in text for sign in signs)
+Kind = Literal["retry", "stop", "error"]
 
 
-def is_rate_limited(error: BaseException) -> bool:
-    return _signs(error, RATE_LIMIT_SIGNS)
-
-
-def is_billing(error: BaseException) -> bool:
-    """Out of credit or quota: every later run would fail the same way."""
-    return _signs(error, BILLING_SIGNS)
+def classify(error: BaseException) -> tuple[Kind, str | None]:
+    """What to do about an error: retry later, stop the provider (and why), or record it."""
+    if isinstance(error, MissingCredentialsError):
+        return "stop", "credentials"
+    text = str(error).lower()
+    if isinstance(error, ModelRateLimitError):
+        return ("stop", "daily quota") if DAILY_QUOTA in text.replace(" ", "") else ("retry", None)
+    if getattr(error, "status_code", None) == OVERLOADED:
+        return "retry", None
+    if OUT_OF_CREDIT in text:
+        return "stop", "billing"
+    return "error", None
 
 
 def _read_manifest(path: Path) -> dict[str, dict[str, Any]]:
-    """The latest line for each key: a key tried again after an error appears twice."""
+    """The latest line for each key: a key tried again after an error appears twice. A line
+    cut short by a crash is ignored (its run is done again)."""
     if not path.exists():
         return {}
     entries: dict[str, dict[str, Any]] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
+        try:
             entry = json.loads(line)
-            entries[entry["key"]] = entry
+        except json.JSONDecodeError:
+            continue
+        if isinstance(entry, dict) and "key" in entry:
+            entries[str(entry["key"])] = cast("dict[str, Any]", entry)
     return entries
 
 
 def run_batch(
     jobs: Sequence[Job],
-    triage: Callable[[Job], Outcome],
+    triage: Triage,
     *,
     manifest: Path,
     budget_usd: float | None,
@@ -205,11 +245,18 @@ def run_batch(
     manifest.parent.mkdir(parents=True, exist_ok=True)
     pending = [job for job in jobs if job.key not in done]
     summary.skipped = len(jobs) - len(pending)
-    for index, job in enumerate(pending):
+    previous: Job | None = None
+    for job in pending:
+        if job.group.provider in summary.provider_stops:
+            summary.not_run += 1
+            continue
         if budget_usd is not None and summary.cost_usd >= budget_usd:
             summary.stopped = "budget"
             break
-        outcome, billing = _attempt(job, triage, sleep)
+        if previous is not None and previous.group == job.group and job.group.pause_seconds:
+            sleep(job.group.pause_seconds)
+        outcome, stop = _attempt(job, triage, sleep)
+        previous = job
         _append(manifest, job, outcome)
         summary.cost_usd += outcome.cost_usd or 0.0
         if outcome.status == "error":
@@ -217,37 +264,34 @@ def run_batch(
         else:
             summary.done += 1
             if outcome.grade:
-                summary.grades[outcome.grade] = summary.grades.get(outcome.grade, 0) + 1
+                summary.grades[outcome.grade] += 1
         if on_done:
             on_done(job, outcome)
-        if billing:
-            summary.stopped = "billing"
-            break
-        more = index + 1 < len(pending)
-        if more and job.group.pause_seconds and pending[index + 1].group == job.group:
-            sleep(job.group.pause_seconds)
+        if stop:
+            summary.provider_stops[job.group.provider] = stop
     return summary
 
 
 def _attempt(
-    job: Job, triage: Callable[[Job], Outcome], sleep: Callable[[float], None]
-) -> tuple[Outcome, bool]:
-    """One run, backing off and trying again while the provider is rate-limiting. Returns
-    the outcome and whether it was a billing error (out of credit: stop the batch)."""
+    job: Job, triage: Triage, sleep: Callable[[float], None]
+) -> tuple[Outcome, str | None]:
+    """One run, backing off and trying again while the provider is rate-limiting or
+    overloaded. Returns the outcome, and why the provider should stop, if it should."""
     wait = FIRST_BACKOFF
     for attempt in range(1, MAX_TRIES + 1):
         try:
-            return triage(job), False
+            return triage(job, attempt), None
         except Exception as raised:  # provider SDKs raise their own types
             error = raised.cause if isinstance(raised, RunError) else raised
             trace_id = raised.trace_id if isinstance(raised, RunError) else None
-            if is_rate_limited(error) and not is_billing(error) and attempt < MAX_TRIES:
+            kind, reason = classify(error)
+            if kind == "retry" and attempt < MAX_TRIES:
                 sleep(wait)
                 wait *= 2
                 continue
             first = str(error).splitlines()[0] if str(error) else ""
             message = f"{type(error).__name__}: {first}"[:500]
-            return Outcome(status="error", error=message, trace_id=trace_id), is_billing(error)
+            return Outcome(status="error", error=message, trace_id=trace_id), reason
     raise AssertionError("unreachable")
 
 
@@ -262,7 +306,6 @@ def _append(manifest: Path, job: Job, outcome: Outcome) -> None:
         "inject": list(job.group.inject),
         "seed": job.seed,
         **asdict(outcome),
-        "injected": list(outcome.injected),
         "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     with manifest.open("a", encoding="utf-8") as file:
