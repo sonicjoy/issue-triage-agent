@@ -24,6 +24,12 @@ DATA = load_dataset()
 REAL = list(DATA.corpus.values())
 CASES = DATA.by_id
 CORPUS = DATA.corpus
+# An issue that's still open in the bundled data. Found, not hard-coded: re-exports close them.
+STILL_OPEN = next(
+    c.id
+    for c in DATA.corpus.values()
+    if c.state != "closed" and not c.truth.duplicate_of and c.id != "19"  # 19: the triaged one
+)
 
 
 class FakeModel(GenericFakeChatModel):
@@ -102,7 +108,7 @@ def test_tools_hide_the_issue_being_triaged() -> None:
 def test_status_distinguishes_done_open_and_duplicate() -> None:
     assert status_of(CORPUS["1"]) == "done (closed)"
     assert status_of(CORPUS["3"]) == "closed as duplicate of #2"
-    assert status_of(CORPUS["5"]) == "open"
+    assert status_of(CORPUS[STILL_OPEN]) == "open"
 
 
 @pytest.mark.parametrize(
@@ -205,7 +211,7 @@ def test_invalid_decision_is_retried_with_feedback(tmp_path: Path) -> None:
 
 
 def test_gives_up_after_two_invalid_decisions(tmp_path: Path) -> None:
-    m = models(iter([decide(regression_of="5"), decide(regression_of="5")]))
+    m = models(iter([decide(regression_of=STILL_OPEN), decide(regression_of=STILL_OPEN)]))
 
     state = run("19", m, tmp_path, approve=True)
 

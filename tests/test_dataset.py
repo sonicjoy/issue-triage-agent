@@ -21,6 +21,12 @@ DATA = load_dataset()
 REAL = DATA.corpus
 SYNTHETIC = DATA.synthetic
 WEEK_1 = "Week 1: Demo agent and foundations"
+# An issue that's still open in the bundled data. Found, not hard-coded: re-exports close them.
+STILL_OPEN = next(
+    c.id
+    for c in DATA.corpus.values()
+    if c.state != "closed" and not c.truth.duplicate_of and c.id != "19"  # 19: the triaged one
+)
 
 
 def gh_issue(number: int, labels: list[str], milestone: str | None, **extra: Any) -> dict[str, Any]:
@@ -131,7 +137,7 @@ def test_committed_files_are_in_canonical_form() -> None:
         ({"labels": ["ui", "stretch"], "milestone": None}, "need a milestone"),
         ({"labels": ["ui"], "milestone": None, "duplicate_of": "29"}, "being triaged"),
         ({"labels": ["ui"], "milestone": None, "duplicate_of": "999"}, "doesn't exist"),
-        ({"labels": ["ui"], "milestone": None, "regression_of": "5"}, "isn't done"),  # open
+        ({"labels": ["ui"], "milestone": None, "regression_of": STILL_OPEN}, "isn't done"),  # open
         ({"labels": ["ui"], "milestone": None, "regression_of": "3"}, "isn't done"),  # a dupe
         ({"labels": ["ui"], "milestone": None, "regression_of": "1"}, None),
     ],

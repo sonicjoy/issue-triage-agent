@@ -64,7 +64,8 @@
         ],
         "milestone": "Week 1: Demo agent and foundations"
       },
-      "source": "real"
+      "source": "real",
+      "state": "closed"
     },
     {
       "id": "6",
@@ -77,7 +78,8 @@
         ],
         "milestone": "Week 1: Demo agent and foundations"
       },
-      "source": "real"
+      "source": "real",
+      "state": "closed"
     },
     {
       "id": "7",
@@ -89,7 +91,8 @@
         ],
         "milestone": "Week 2: Recorder core"
       },
-      "source": "real"
+      "source": "real",
+      "state": "closed"
     },
     {
       "id": "8",
@@ -101,7 +104,8 @@
         ],
         "milestone": "Week 2: Recorder core"
       },
-      "source": "real"
+      "source": "real",
+      "state": "closed"
     },
     {
       "id": "9",
@@ -113,19 +117,21 @@
         ],
         "milestone": "Week 2: Recorder core"
       },
-      "source": "real"
+      "source": "real",
+      "state": "closed"
     },
     {
       "id": "10",
       "title": "Redaction guardrail at ingest",
-      "body": "Nothing sensitive is ever stored. The first guardrail, and a good README and interview story.\n\n**Done when**\n- Redacts API keys and tokens (Anthropic, OpenAI, GitHub, AWS, GCP, generic high-entropy strings), private keys, connection strings, emails and phone numbers\n- Runs on every ingest path before any write; the hook also does a first pass client-side\n- Stores redaction counts per span, never the original values\n- Tests cover each pattern, and a planted canary secret never reaches the database\n\nEstimate: ~1h\n\nPlan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md",
+      "body": "Nothing sensitive is ever stored. The first guardrail, and a good README and interview story.\n\n**Done when**\n- Redacts API keys and tokens (Anthropic, OpenAI, GitHub, AWS, GCP, generic high-entropy strings), private keys, connection strings, emails and phone numbers\n- Runs on every ingest path before any write; the hook also does a first pass client-side\n- Stores redaction counts per span, never the original values\n- Tests cover each pattern, and a planted canary secret never reaches the database\n\n## Design notes (agreed in #42)\n\n**What gets redacted.** Everything a source sends, *before* it's mapped to columns: every string at any depth in a span's attributes, events, status message and resource. Prompts also arrive as attributes (`gen_ai.input.messages`), so redacting only the mapped columns would leak them. The columns this covers are listed in the \"Redaction contract\" section of `docs/schema.md`.\n\n**Replay-friendly placeholders.** Replacing every match with `[REDACTED]` would hide whether the key in step 3 is the same key passed to a tool in step 7. For a recorder, that path through the run is often the interesting part. So each match becomes a typed, consistent placeholder:\n\n```\n[REDACTED:openai_key:a3f9]   <- pattern type, plus a short fingerprint\n```\n\n- The fingerprint is a truncated HMAC of the value, using a key that exists only on that installation (a new setting, generated if missing). The same secret gets the same placeholder throughout that database, so replays show it moving between steps. Without the key, nobody can test guesses against the fingerprint.\n- Only the matched substring is replaced, never the whole field, so the text around it stays readable in replays.\n- `spans.redactions` holds counts per pattern type, as it does now.\n\n**Not doing:** redaction that can be undone, such as encrypting secrets into a side table. It breaks plan decision 3 (original values are never written), and it adds key management: lose the key and the data is gone, leak it and everything leaks.\n\n**Re-running a recorded run** (e.g. turning a run into an eval case, #16) fills placeholders at that time, with values the person replaying supplies or with fake values of the right shape. A real secret in a prompt shouldn't become part of an eval case anyway.\n\n**Watch for over-redaction.** The catch-all rule for random-looking strings can hit hashes, ids and git SHAs, which makes replays harder to read. Use the per-pattern counts to spot it and tune the rule, and add tests with near-misses: a git SHA, a UUID, a base64 image fragment.\n\n**Tests to add on top of the list above:**\n- The same secret in two spans gets the same placeholder.\n- Different secrets get different placeholders.\n- Without the key, the fingerprint can't be recomputed from a guessed value.\n- Text around a match is untouched.\n\nEstimate: ~1h (likely ~1.5h with the placeholder design)\n\nPlan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md",
       "truth": {
         "labels": [
           "recorder"
         ],
         "milestone": "Week 2: Recorder core"
       },
-      "source": "real"
+      "source": "real",
+      "state": "closed"
     },
     {
       "id": "11",
@@ -137,7 +143,8 @@
         ],
         "milestone": "Week 2: Recorder core"
       },
-      "source": "real"
+      "source": "real",
+      "state": "closed"
     },
     {
       "id": "12",
@@ -149,7 +156,8 @@
         ],
         "milestone": "Week 2: Recorder core"
       },
-      "source": "real"
+      "source": "real",
+      "state": "closed"
     },
     {
       "id": "13",
@@ -166,7 +174,7 @@
     {
       "id": "14",
       "title": "Labelling CLI and hand error analysis",
-      "body": "Read real traces before building any metric.\n\n**Done when**\n- `afr label <run>` shows a run and records a failure mode and a note\n- 50 failed runs read and labelled by hand\n- `docs/evals/error-analysis.md`: failure taxonomy with counts and one example per mode\n\nEstimate: ~2h\n\nPlan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md",
+      "body": "Read real traces before building any metric.\n\n**Done when**\n- `afr label <run>` shows a run and records a failure mode and a note\n- 50 failed runs read and labelled by hand\n- `docs/evals/error-analysis.md`: failure taxonomy with counts and one example per mode\n- Retrieval check for the embedding model (from #11): about 20 queries written from the labelled runs, each with its known right runs; report recall@5 for `afr search` with bge-small, and compare one larger fastembed model. Decide whether bge-small is enough. A 768-dimension model would need a migration and a re-embed.\n\nEstimate: ~2.5h\n\nPlan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md",
       "truth": {
         "labels": [
           "evals"
@@ -421,6 +429,20 @@
         "milestone": "Week 5: Replay UI and launch"
       },
       "source": "real"
+    },
+    {
+      "id": "46",
+      "title": "Keep Claude prices current with a weekly check",
+      "body": "Keep `src/flight_recorder/pricing.yaml` current without a network call at hook or ingest time.\n\n## What\n\n- `afr pricing check [--write]`: fetch Anthropic's pricing page (https://platform.claude.com/docs/en/about-claude/pricing) and compare the rates of the Claude models in `pricing.yaml`: input, output, cache read, 5-minute and 1-hour cache writes, Haiku's long-context tier and Opus fast mode. Prints the differences; `--write` updates `pricing.yaml` and bumps its version.\n- A weekly GitHub Action (plus `workflow_dispatch`) that runs it and opens or updates one PR with the changes and the differences in its description. It never merges. No secrets: the page is public.\n- `pricing.yaml` gets a `version` (the date prices were checked). Each priced span stores it in a new `spans.pricing_version` column (migration 0004), so old costs can be recomputed from that version of the file.\n- Tested offline with a saved copy of the page.\n\n## Done when\n\n- The action runs green on `workflow_dispatch` against the live page\n- Tests and the pre-MR review pass",
+      "truth": {
+        "labels": [
+          "infra",
+          "recorder"
+        ],
+        "milestone": "Week 2: Recorder core"
+      },
+      "source": "real",
+      "state": "closed"
     }
   ]
 }
