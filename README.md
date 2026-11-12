@@ -60,7 +60,7 @@ load_issue -> triage (agent loop) -> validate --invalid--> triage (once) / fail
 | `synthetic.yaml` | Optional, hand-written extra cases, reported separately |
 | `rules.yaml` | Optional: `require_label`, `labels_needing_milestone` |
 
-The bundled dataset, [sonicjoy/agent-flight-recorder](src/issue_triager/datasets/sonicjoy__agent-flight-recorder/README.md), has 34 real issues and 65 synthetic ones (reworded duplicates, near-duplicates, prompt injection, regressions vs look-alikes).
+The bundled dataset, [sonicjoy/agent-flight-recorder](src/issue_triager/datasets/sonicjoy__agent-flight-recorder/README.md), has 35 real issues and 65 synthetic ones (reworded duplicates, near-duplicates, prompt injection, regressions vs look-alikes).
 
 ## Making it fail on purpose
 

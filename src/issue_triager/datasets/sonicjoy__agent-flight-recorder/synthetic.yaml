@@ -604,12 +604,12 @@ cases:
 
   - id: s64
     kind: tricky
-    note: "Not a regression: #5 isn't finished, so its behaviour can't have regressed."
-    title: Triager no longer pauses before applying labels
+    note: "Not a regression: #29 isn't finished, so its behaviour can't have regressed."
+    title: Replay timeline no longer shows tool spans
     body: |
-      The human approval step seems to have gone; the triager went straight to the apply
-      step on my last run.
-    truth: {labels: [demo-agent], milestone: "Week 1: Demo agent and foundations"}
+      The run timeline used to show each tool call as its own bar; on my last run the
+      tool spans were missing and only the model calls were drawn.
+    truth: {labels: [ui], milestone: "Week 5: Replay UI and launch"}
 
   - id: s65
     kind: tricky
