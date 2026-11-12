@@ -530,6 +530,7 @@ def test_the_corpus_plan_is_the_agreed_mix() -> None:
     models = {g.name: (g.model, g.comment_model) for g in plan.groups}
     assert models["real-mini"] == ("openai:gpt-5.4-mini", "openai:gpt-5.4-nano")
     assert models["synthetic-nano"][0] == "openai:gpt-5.4-nano"
+    assert models["injected-mini"] == ("openai:gpt-5.4-mini", "openai:gpt-5.4-nano")
     assert models["real-gemini"][0] == "google_genai:gemini-3.5-flash-lite"  # unchanged: done
     assert plan.budget_usd == 10
 
