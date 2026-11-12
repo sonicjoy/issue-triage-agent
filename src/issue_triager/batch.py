@@ -215,9 +215,19 @@ def classify(error: BaseException) -> tuple[Kind, str | None]:
         return "stop", "billing"
     if isinstance(error, ModelRateLimitError):
         return ("stop", "daily quota") if DAILY_QUOTA in text.replace(" ", "") else ("retry", None)
-    if getattr(error, "status_code", None) in RETRY_STATUSES:
+    if _status(error) in RETRY_STATUSES:
         return "retry", None
     return "error", None
+
+
+def _status(error: BaseException) -> int | None:
+    """The HTTP status an SDK error carries: `status_code` (Anthropic, OpenAI) or `code`
+    (Google GenAI)."""
+    for name in ("status_code", "code"):
+        value = getattr(error, name, None)
+        if isinstance(value, int):
+            return value
+    return None
 
 
 def _read_manifest(path: Path) -> dict[str, dict[str, Any]]:
