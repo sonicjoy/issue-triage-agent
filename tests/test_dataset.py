@@ -255,3 +255,14 @@ def test_export_only_reads_from_github(monkeypatch: pytest.MonkeyPatch, tmp_path
     read_only = {("gh", "repo", "view"), ("gh", "label", "list"), ("gh", "issue", "list")}
     for args in calls:
         assert tuple(args[:3]) in read_only or (args[1] == "api" and "-X" not in args), args
+
+
+def test_cases_about_unfinished_work_point_at_open_issues() -> None:
+    """A re-export can close an issue a case calls unfinished, leaving its truth stale."""
+    import re
+
+    from issue_triager.tools import status_of
+
+    for case in SYNTHETIC:
+        for number in re.findall(r"#(\d+) isn't finished", case.note):
+            assert status_of(REAL[number]) == "open", f"{case.id}: #{number} is done now"
