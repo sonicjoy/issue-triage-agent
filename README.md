@@ -12,7 +12,7 @@ It is the demo agent for [Agent Flight Recorder](https://github.com/sonicjoy/age
 uv sync
 cp .env.example .env   # add GOOGLE_API_KEY (free tier) or OPENAI_API_KEY / ANTHROPIC_API_KEY
 
-# Triage an issue from the bundled dataset (this project's own issues)
+# Triage an issue from the bundled dataset (Agent Flight Recorder's issues)
 uv run triager run --issue 19 --model google_genai:gemini-3.5-flash-lite
 
 # The same, on the OpenAI Agents SDK
@@ -57,8 +57,9 @@ load_issue -> triage (agent loop) -> validate --invalid--> triage (once) / fail
 |---|---|
 | `repo.json` | Exported: description, labels, milestones |
 | `issues.json` | Exported: every issue with its real labels, milestone, and duplicate (`Duplicate of #N` comment) or regression (`Regression of #N` line) |
-| `synthetic.yaml` | Optional, hand-written extra cases, reported separately |
+| `synthetic.yaml` | Optional, hand-written extra cases, reported separately. A case may list other answers that also count as right under `accept` |
 | `rules.yaml` | Optional: `require_label`, `labels_needing_milestone` |
+| `accepted_answers.yaml` | Optional: extra answers that also count as right for real issues, each with a reason. Synthetic duplicates of those issues accept the same |
 
 The bundled dataset, [sonicjoy/agent-flight-recorder](src/issue_triager/datasets/sonicjoy__agent-flight-recorder/README.md), has 35 real issues and 65 synthetic ones (reworded duplicates, near-duplicates, prompt injection, regressions vs look-alikes).
 
@@ -84,7 +85,7 @@ uv run triager batch batches/afr-corpus.yaml --record http://127.0.0.1:4318   # 
 - **Manifest:** each run is written to `runs/batch-<plan>.jsonl` as it finishes: case, model, repeat, seed, status, grade, cost and trace id. Running the batch again skips what's done and retries runs that ended in an error.
 - **Spend cap:** `budget_usd` in the plan, or `--budget`. The batch stops cleanly when it's reached, counting what the manifest already spent. With a cap, every model in the plan must have a price, or the plan is refused. A run that errors part-way isn't counted (its tokens are lost with the error), so leave some headroom.
 - **Errors, by type:** a rate limit or an overloaded provider backs off (15 s, doubling) and tries again, up to 6 times; each attempt is its own trace, marked `triager.batch.attempt`, and the manifest names the last. A spent daily quota, an account out of credit or a missing API key stops that provider's runs, and the other providers carry on. Any other error is recorded and the batch goes on. The command exits 1 if any run errored or a provider stopped.
-- **Grades on the trace:** with recording on, each run's root span gets its grade against the real triage: `triager.grade` (`correct`, `wrong` or `failed`) and `triager.grade.labels`, `.milestone`, `.duplicate_of` and `.regression_of` (`ok` or `wrong`). `triager run` adds them too. They're set after the triage ends and never reach the agent's prompt or its own spans.
+- **Grades on the trace:** with recording on, each run's root span gets its grade against the real triage: `triager.grade` (`correct`, `wrong` or `failed`) and `triager.grade.labels`, `.milestone`, `.duplicate_of` and `.regression_of` (`ok` or `wrong`). A field is `ok` when it matches the exported truth or an accepted alternative. The span also gets `triager.expected.*` (the exported truth), `triager.decided.*` (the decision, when there was one), `triager.case_source` and `triager.triage_model`. When a case accepts more than the exported truth, it also gets `triager.accepted.<field>` and `triager.accept_reason`. `triager run` adds the same attributes. They're set after the triage ends and never reach the agent's prompt or its own spans.
 
 ## Other options
 
