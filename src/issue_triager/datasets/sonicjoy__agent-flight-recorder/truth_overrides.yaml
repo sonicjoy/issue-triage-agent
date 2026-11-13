@@ -1,0 +1,29 @@
+# Corrections to real issues' exported truth (issues.json comes from GitHub and a
+# re-export overwrites it; GitHub itself is left as it was). Edit by hand.
+#
+# Each override replaces the truth fields it gives (labels as a whole set) and keeps the
+# rest. A reason is required, and it goes on every run graded against the corrected
+# truth (triager.truth_override). Paraphrases based on an overridden issue follow it.
+#
+# From AFR #14's hand error analysis of 50 wrong runs (2026-11-13): each of these issues
+# was under-labelled, and the triager's extra label was right.
+
+overrides:
+  "1":
+    labels: [documentation, infra]
+    reason: "AFR #14: tooling and CI setup includes documenting it; the triager's documentation label was right"
+  "7":
+    labels: [infra, recorder]
+    reason: "AFR #14: the issue sets up migrations and local Postgres, which is infra as well as recorder"
+  "17":
+    labels: [documentation, evals]
+    reason: "AFR #14: the judge rubric is a written document; the triager's documentation label was right"
+  "20":
+    labels: [documentation, evals]
+    reason: "AFR #14: the comparison is a written report; labelled on s19, the paraphrase of #20"
+  "26":
+    labels: [infra, mcp]
+    reason: "AFR #14: the issue containerises the MCP server; mcp was missing"
+  "33":
+    labels: [documentation, infra]
+    reason: "AFR #14: launching and going public is infra work as well; the infra label makes sense"

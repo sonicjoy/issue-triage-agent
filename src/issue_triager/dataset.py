@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -77,6 +77,9 @@ class TriageInput(_Frozen):
     body: str
 
 
+TRUTH_FIELDS = ("labels", "milestone", "duplicate_of", "regression_of")
+
+
 class GroundTruth(_Frozen):
     """The triage decision the agent is graded against.
 
@@ -92,12 +95,21 @@ class GroundTruth(_Frozen):
     milestone: str | None
     duplicate_of: str | None = None
     regression_of: str | None = None
+    accept: dict[str, list[Any]] = Field(default_factory=dict[str, list[Any]])
+    """Other answers that also count as right, per field, for a debatable truth (AFR #14):
+    `{"duplicate_of": [None]}`. Grading compares them like the truth."""
 
     @model_validator(mode="after")
     def _one_relation(self) -> Self:
         if self.duplicate_of and self.regression_of:
             raise ValueError("an issue is a duplicate or a regression, not both")
+        unknown = sorted(set(self.accept) - set(TRUTH_FIELDS))
+        if unknown:
+            raise ValueError(f"accept: {unknown} aren't truth fields ({', '.join(TRUTH_FIELDS)})")
         return self
+
+    def __hash__(self) -> int:  # accept is a dict; the rest identifies the truth
+        return hash((self.labels, self.milestone, self.duplicate_of, self.regression_of))
 
 
 class TriageCase(_Frozen):
@@ -113,6 +125,8 @@ class TriageCase(_Frozen):
     """For paraphrases: the real issue this rewords."""
     note: str = ""
     """For tricky cases: what makes the case hard."""
+    truth_override: str = ""
+    """Why the exported truth was corrected (truth_overrides.yaml), or empty."""
 
     def agent_input(self) -> TriageInput:
         return TriageInput(id=self.id, title=self.title, body=self.body)
@@ -190,7 +204,41 @@ def load_dataset(path: Path = DEFAULT_DATASET) -> Dataset:
     rules = Rules()
     if (path / "rules.yaml").exists():
         rules = Rules.model_validate(yaml.safe_load((path / "rules.yaml").read_text("utf-8")))
-    return Dataset(path=path, repo=repo, real=issues.issues, synthetic=synthetic, rules=rules)
+    real = issues.issues
+    if (path / "truth_overrides.yaml").exists():
+        raw = yaml.safe_load((path / "truth_overrides.yaml").read_text(encoding="utf-8"))
+        real, synthetic = _overridden(real, synthetic, (raw or {}).get("overrides") or {})
+    return Dataset(path=path, repo=repo, real=real, synthetic=synthetic, rules=rules)
+
+
+def _overridden(
+    real: list[TriageCase], synthetic: list[TriageCase], overrides: dict[Any, Any]
+) -> tuple[list[TriageCase], list[TriageCase]]:
+    """Real cases with corrected truths (truth_overrides.yaml, AFR #14), and paraphrases of
+    them following suit: a paraphrase's truth is its source's triage, plus its own link."""
+    fixed = {case.id: case for case in real}
+    for key, fix in overrides.items():
+        issue, changes = str(key), dict(fix or {})
+        if issue not in fixed:
+            raise ValueError(f"truth_overrides: #{issue} isn't a real issue in the export")
+        reason = str(changes.pop("reason", "") or "").strip()
+        if not reason:
+            raise ValueError(f"truth_overrides: #{issue} needs a reason")
+        unknown = sorted(set(changes) - set(TRUTH_FIELDS))
+        if unknown:
+            raise ValueError(f"truth_overrides: #{issue}: {unknown} aren't truth fields")
+        case = fixed[issue]
+        truth = GroundTruth.model_validate(case.truth.model_dump() | changes)
+        fixed[issue] = case.model_copy(update={"truth": truth, "truth_override": reason})
+    following: list[TriageCase] = []
+    for case in synthetic:
+        source = fixed.get(str(case.based_on)) if case.kind == "paraphrase" else None
+        if source is not None and source.truth_override:
+            own = {"duplicate_of": case.truth.duplicate_of, "accept": case.truth.accept}
+            truth = GroundTruth.model_validate(source.truth.model_dump() | own)
+            case = case.model_copy(update={"truth": truth, "truth_override": source.truth_override})
+        following.append(case)
+    return [fixed[case.id] for case in real], following
 
 
 def dataset_dir_name(repo: str) -> str:
