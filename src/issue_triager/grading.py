@@ -34,7 +34,7 @@ def grade_fields(decision: dict[str, Any], truth: GroundTruth) -> dict[str, bool
     marks: dict[str, bool] = {}
     for name in FIELDS:
         decided = _normal(name, decision.get(name))
-        right = [getattr(truth, name), *truth.accept.get(name, [])]
+        right = [getattr(truth, name), *getattr(truth.accept, name)]
         marks[name] = any(decided == _normal(name, answer) for answer in right)
     return marks
 
@@ -63,10 +63,11 @@ def grade_attributes(state: dict[str, Any], case: TriageCase) -> dict[str, Attri
     truth = {name: getattr(case.truth, name) for name in FIELDS}
     attributes: dict[str, Attribute] = {"triager.case_source": case.source}
     attributes |= _shown("triager.expected", truth)
-    if case.truth_override:
-        attributes["triager.truth_override"] = case.truth_override
-    for name, answers in case.truth.accept.items():
-        attributes[f"triager.accepted.{name}"] = [_answer(name, a) for a in answers]
+    if case.accept_reason:
+        attributes["triager.accept_reason"] = case.accept_reason
+    for name in FIELDS:
+        if answers := getattr(case.truth.accept, name):
+            attributes[f"triager.accepted.{name}"] = [_answer(name, a) for a in answers]
     decision = state.get("decision")
     if state.get("status") == "failed" or not isinstance(decision, dict):
         return attributes | {"triager.grade": "failed"}

@@ -1,7 +1,8 @@
-"""Truth fixes from AFR #14's hand error analysis: overrides for real issues' truths,
-accepted alternatives for debatable ones, and s65 no longer a regression.
+"""Truth fixes from AFR #14's hand error analysis: accepted answers for under-labelled real
+issues (and the synthetic duplicates of them), a debatable duplicate, and s65 no longer a
+regression. The exported truth, and what the agent's tools show, never change.
 
-Written from .review/14-truth-fixes/spec.md before the code.
+Written from .review/14-truth-fixes/spec.md (round 1: accept both) before the code.
 """
 
 from __future__ import annotations
@@ -13,12 +14,12 @@ from typing import Any
 import pytest
 import yaml
 
-from issue_triager.dataset import GroundTruth, TriageCase, load_dataset
+from issue_triager.dataset import Accepted, GroundTruth, TriageCase, load_dataset
 
 WEEK_2 = "Week 2: Recorder core"
 
 
-def write_dataset(tmp: Path, *, overrides: Any = None, synthetic: list[Any] | None = None) -> Path:
+def write_dataset(tmp: Path, *, accepted: Any = None, synthetic: list[Any] | None = None) -> Path:
     repo = {"repo": "a/b", "labels": [{"name": n} for n in ("infra", "mcp", "recorder")],
             "milestones": [{"title": WEEK_2}]}  # fmt: skip
     issues = {"repo": "a/b", "issues": [
@@ -31,105 +32,111 @@ def write_dataset(tmp: Path, *, overrides: Any = None, synthetic: list[Any] | No
     (tmp / "issues.json").write_text(json.dumps(issues), encoding="utf-8")
     if synthetic is not None:
         (tmp / "synthetic.yaml").write_text(yaml.safe_dump({"cases": synthetic}), encoding="utf-8")
-    if overrides is not None:
-        (tmp / "truth_overrides.yaml").write_text(yaml.safe_dump(overrides), encoding="utf-8")
+    if accepted is not None:
+        (tmp / "accepted_answers.yaml").write_text(yaml.safe_dump(accepted), encoding="utf-8")
     return tmp
 
 
 PARAPHRASE = {"id": "s07", "kind": "paraphrase", "based_on": "7", "title": "Schema please",
               "body": "b", "truth": {"labels": ["recorder"], "milestone": WEEK_2,
                                      "duplicate_of": "7"}}  # fmt: skip
+TRICKY_DUPLICATE = {"id": "s70", "kind": "tricky", "note": "same work, other words",
+                    "title": "Migrations", "body": "b",
+                    "truth": {"labels": ["recorder"], "milestone": WEEK_2,
+                              "duplicate_of": "7"}}  # fmt: skip
+FIX_7 = {"accept": {"7": {"labels": [["infra", "recorder"]], "reason": "migrations are infra"}}}
 
 
-# --- overrides -----------------------------------------------------------------------
+# --- accepted answers for real issues ----------------------------------------------------
 
 
-def test_an_override_replaces_the_fields_it_gives_and_records_why(tmp_path: Path) -> None:
-    path = write_dataset(tmp_path, overrides={"overrides": {
-        "7": {"labels": ["infra", "recorder"], "reason": "AFR #14: migrations are infra too"},
-    }})  # fmt: skip
+def test_an_accepted_answer_adds_to_the_truth_and_replaces_nothing(tmp_path: Path) -> None:
+    data = load_dataset(write_dataset(tmp_path, accepted=FIX_7))
+
+    fixed = data.by_id["7"]
+    assert fixed.truth.labels == frozenset({"recorder"})  # as exported: tools show this
+    assert fixed.truth.accept.labels == (frozenset({"infra", "recorder"}),)
+    assert fixed.accept_reason == "migrations are infra"
+    assert data.by_id["8"].accept_reason == ""
+
+
+def test_every_synthetic_duplicate_of_the_issue_follows(tmp_path: Path) -> None:
+    path = write_dataset(tmp_path, synthetic=[PARAPHRASE, TRICKY_DUPLICATE], accepted=FIX_7)
 
     data = load_dataset(path)
 
-    fixed = data.by_id["7"]
-    assert fixed.truth.labels == frozenset({"infra", "recorder"})
-    assert fixed.truth.milestone == WEEK_2  # not given: kept
-    assert fixed.truth_override == "AFR #14: migrations are infra too"
-    assert data.by_id["8"].truth_override == ""
-
-
-def test_a_paraphrase_follows_its_sources_override(tmp_path: Path) -> None:
-    path = write_dataset(tmp_path, synthetic=[PARAPHRASE], overrides={"overrides": {
-        "7": {"labels": ["infra", "recorder"], "reason": "r"},
-    }})  # fmt: skip
-
-    paraphrase = load_dataset(path).by_id["s07"]
-
-    assert paraphrase.truth.labels == frozenset({"infra", "recorder"})
-    assert paraphrase.truth.duplicate_of == "7"  # its own link stays
-    assert paraphrase.truth_override == "r"
+    for case_id in ("s07", "s70"):
+        case = data.by_id[case_id]
+        assert case.truth.labels == frozenset({"recorder"}), case_id
+        assert case.truth.duplicate_of == "7"
+        assert case.truth.accept.labels == (frozenset({"infra", "recorder"}),)
+        assert case.accept_reason == "migrations are infra"
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    "accepted",
     [
-        {"overrides": {"7": {"labels": ["infra"]}}},  # no reason
-        {"overrides": {"99": {"labels": ["infra"], "reason": "r"}}},  # no such issue
-        {"overrides": {"s07": {"labels": ["infra"], "reason": "r"}}},  # synthetic: edit it
-        {"overrides": {"7": {"colour": "red", "reason": "r"}}},  # not a truth field
+        {"accept": {"7": {"labels": [["infra"]]}}},  # no reason
+        {"accept": {"99": {"labels": [["infra"]], "reason": "r"}}},  # no such issue
+        {"accept": {"s07": {"labels": [["infra"]], "reason": "r"}}},  # synthetic: edit it
+        {"accept": {"7": {"colour": ["red"], "reason": "r"}}},  # not a truth field
+        {"accept": {"7": {"labels": ["infra"], "reason": "r"}}},  # a flat list, not sets
+        {"accept": {"7": {"duplicate_of": [24], "reason": "r"}}},  # an unquoted id
+        {"overrides": {"7": {"labels": [["infra"]], "reason": "r"}}},  # misspelt top level
     ],
 )
-def test_a_bad_override_is_refused(tmp_path: Path, overrides: Any) -> None:
-    path = write_dataset(tmp_path, synthetic=[PARAPHRASE], overrides=overrides)
+def test_a_bad_entry_is_refused(tmp_path: Path, accepted: Any) -> None:
+    path = write_dataset(tmp_path, synthetic=[PARAPHRASE], accepted=accepted)
 
     with pytest.raises(ValueError):
         load_dataset(path)
 
 
-def test_the_bundled_overrides_are_the_ones_decided_in_afr_14() -> None:
+def test_the_bundled_answers_are_the_ones_decided_in_afr_14() -> None:
     data = load_dataset()
-    labels = {i: sorted(data.by_id[i].truth.labels) for i in ("1", "7", "17", "20", "26", "33")}
+    accepted = {i: [sorted(s) for s in data.by_id[i].truth.accept.labels]
+                for i in ("1", "7", "17", "20", "26", "33")}  # fmt: skip
 
-    assert labels == {
-        "1": ["documentation", "infra"],
-        "7": ["infra", "recorder"],
-        "17": ["documentation", "evals"],
-        "20": ["documentation", "evals"],
-        "26": ["infra", "mcp"],
-        "33": ["documentation", "infra"],
+    assert accepted == {
+        "1": [["documentation", "infra"]],
+        "7": [["infra", "recorder"]],
+        "17": [["documentation", "evals"]],
+        "20": [["documentation", "evals"]],
+        "26": [["infra", "mcp"]],
+        "33": [["documentation", "infra"]],
     }
-    assert all(data.by_id[i].truth_override for i in labels)
-    assert sorted(data.by_id["s19"].truth.labels) == ["documentation", "evals"]  # paraphrase of 20
+    assert all(data.by_id[i].accept_reason for i in accepted)
+    assert data.by_id["s19"].truth.accept.labels == data.by_id["20"].truth.accept.labels
+    assert data.by_id["s57"].truth.accept.labels == data.by_id["33"].truth.accept.labels
 
 
-def test_the_override_reason_goes_on_the_run() -> None:
-    from issue_triager.grading import grade_attributes
+def test_accepted_labels_follow_the_repo_taxonomy() -> None:
+    data = load_dataset()
+    known = data.repo.label_names
 
-    case = load_dataset().by_id["26"]
-    decision = {"labels": ["infra", "mcp"], "milestone": case.truth.milestone,
-                "duplicate_of": None, "regression_of": None}  # fmt: skip
-
-    marks = grade_attributes({"status": "applied", "decision": decision}, case)
-
-    assert marks["triager.grade"] == "correct"
-    assert marks["triager.truth_override"] == case.truth_override
+    for case in data.cases:
+        for labels in case.truth.accept.labels:
+            assert labels <= known, (case.id, sorted(labels - known))
 
 
-def test_a_run_without_an_override_has_no_override_attribute() -> None:
-    from issue_triager.grading import grade_attributes
+def test_the_agents_tools_still_show_the_exported_labels() -> None:
+    from issue_triager.dataset import DEFAULT_DATASET, IssueExport
 
-    case = load_dataset().by_id["8"]
+    raw = (DEFAULT_DATASET / "issues.json").read_text("utf-8")
+    exported = IssueExport.model_validate_json(raw)
+    corpus = load_dataset().corpus
 
-    assert "triager.truth_override" not in grade_attributes({"status": "failed"}, case)
+    for issue in exported.issues:
+        assert corpus[issue.id].truth.labels == issue.truth.labels
 
 
-# --- accepted alternatives -------------------------------------------------------------
+# --- grading -------------------------------------------------------------------------------
 
 
-def test_an_accepted_alternative_counts_as_right() -> None:
+def test_an_accepted_answer_counts_as_right() -> None:
     from issue_triager.grading import grade_fields
 
-    accept = {"duplicate_of": [None], "labels": [["evals", "analyst"]]}
+    accept = Accepted(duplicate_of=(None,), labels=(frozenset({"evals", "analyst"}),))
     truth = GroundTruth(labels=frozenset({"evals"}), milestone=None, duplicate_of="23",
                         accept=accept)  # fmt: skip
     base = {"labels": ["evals"], "milestone": None, "regression_of": None}
@@ -139,14 +146,37 @@ def test_an_accepted_alternative_counts_as_right() -> None:
     assert grade_fields(base | {"duplicate_of": None}, truth)["duplicate_of"]
     assert not grade_fields(base | {"duplicate_of": "24"}, truth)["duplicate_of"]
     assert grade_fields(both, truth)["labels"]
+    assert grade_fields(base | {"duplicate_of": None}, truth)["labels"]  # the truth itself
 
 
-def test_accept_only_takes_truth_fields() -> None:
-    with pytest.raises(ValueError):
-        GroundTruth(labels=frozenset(), milestone=None, accept={"colour": ["red"]})
+def test_a_run_matching_the_exported_truth_stays_right() -> None:
+    from issue_triager.grading import grade_attributes
+
+    case = load_dataset().by_id["26"]
+    exported = {"labels": sorted(case.truth.labels), "milestone": case.truth.milestone,
+                "duplicate_of": None, "regression_of": None}  # fmt: skip
+
+    marks = grade_attributes({"status": "applied", "decision": exported}, case)
+
+    assert marks["triager.grade"] == "correct"
 
 
-def test_accepted_alternatives_go_on_the_run() -> None:
+def test_accepted_answers_and_why_go_on_the_run() -> None:
+    from issue_triager.grading import grade_attributes
+
+    case = load_dataset().by_id["26"]
+    fuller = {"labels": ["infra", "mcp"], "milestone": case.truth.milestone,
+              "duplicate_of": None, "regression_of": None}  # fmt: skip
+
+    marks = grade_attributes({"status": "applied", "decision": fuller}, case)
+
+    assert marks["triager.grade"] == "correct"
+    assert marks["triager.expected.labels"] == ["infra"]
+    assert marks["triager.accepted.labels"] == ["infra, mcp"]
+    assert marks["triager.accept_reason"] == case.accept_reason
+
+
+def test_s58_accepts_no_duplicate() -> None:
     from issue_triager.grading import grade_attributes
 
     case = load_dataset().by_id["s58"]
@@ -160,12 +190,12 @@ def test_accepted_alternatives_go_on_the_run() -> None:
     assert marks["triager.accepted.duplicate_of"] == ["(none)"]
 
 
-def test_a_case_without_alternatives_has_no_accepted_attributes() -> None:
+def test_a_case_without_accepted_answers_has_no_such_attributes() -> None:
     from issue_triager.grading import grade_attributes
 
     marks = grade_attributes({"status": "failed"}, load_dataset().by_id["8"])
 
-    assert not any(key.startswith("triager.accepted.") for key in marks)
+    assert not any(k.startswith("triager.accept") for k in marks)
 
 
 # --- s65 -------------------------------------------------------------------------------
