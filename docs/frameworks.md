@@ -36,12 +36,12 @@ Runner.run(state)                    approved -> apply_triage writes the dry run
 | **Human in the loop** | `interrupt()` anywhere in a node; resume with `Command(resume=...)` | Only on a tool call (`needs_approval`). `result.interruptions`, then `state.approve()` / `reject()`, then `Runner.run(state)` |
 | **Pause and resume** | Resume by thread id from the checkpointer | Resume from a JSON snapshot, which could be stored and resumed in another process |
 | **Tool errors** | `ToolException` with `handle_tool_error=True` shows the message to the model | `failure_error_function`; the default hides the message ("An error occurred while running the tool"), so we pass one that shows it |
-| **Tool-call limit** | `ToolCallLimitMiddleware(run_limit=8)` | None per tool; `max_turns` counts model calls (default 10). The tools count their own calls |
+| **Tool-call limit** | `ToolCallLimitMiddleware(run_limit=8)` | The tools stop after 8 calls. `max_turns` is 12 model calls |
 | **Structured output** | `ToolStrategy(schema)`: the decision is a tool call named `TriageDecision` | The schema is `apply_triage`'s arguments (strict JSON schema). `output_type=` would also work, but then nothing can pause before applying |
 | **Models** | LangChain chat model per provider | OpenAI natively (Responses API); Gemini and Claude through their OpenAI-compatible endpoints (Chat Completions) |
-| **Tracing** | Nothing built in without LangSmith; the recorder will add it (#8) | Built in and on by default: uploads to OpenAI, prompts and tool data included. Here a local processor writes JSON Lines to `runs/`, and `--openai-trace` opts in to the upload |
+| **Tracing** | No LangSmith. `--record` sends OpenTelemetry traces (OpenInference) to an OTLP/HTTP endpoint | The SDK's own trace is written as JSON Lines under `runs/`. Upload to OpenAI is off unless `--openai-trace`. `--record` adds the same OpenTelemetry traces |
 | **Test doubles** | A `GenericFakeChatModel` subclass that ignores `bind_tools` | `agents.testing.ScriptedModel` ships with the SDK and records every call (tools, settings, input) |
-| **Code** | 217 lines | 470 lines, mostly the model adapters, trace writer and the pause/resume loop that LangGraph's checkpointer does for us |
+| **Code** | 217 lines | 488 lines, mostly the model adapters, trace writer and the pause/resume loop that LangGraph's checkpointer does for us |
 
 ## Gotchas found while porting
 
