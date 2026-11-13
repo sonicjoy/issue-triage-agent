@@ -1,0 +1,30 @@
+# Answers accepted besides real issues' exported truth. Edit by hand.
+#
+# issues.json comes from GitHub and a re-export overwrites it, so its truth (and what the
+# agent's search tools show) is never edited. An entry here adds answers that also count
+# as right, per field: labels as a list of label sets, other fields as lists of values
+# or null. Every synthetic duplicate of the issue (paraphrase or tricky) accepts them too.
+# A reason is required, and graded runs record it (triager.accept_reason).
+#
+# From AFR #14's hand error analysis of 50 wrong runs (2026-11-13): each of these issues
+# was under-labelled, and the triager's fuller label set was right too.
+
+accept:
+  "1":
+    labels: [[documentation, infra]]
+    reason: "AFR #14: tooling and CI setup includes documenting it; documentation fits too"
+  "7":
+    labels: [[infra, recorder]]
+    reason: "AFR #14: the issue sets up migrations and local Postgres, which is infra as well as recorder"
+  "17":
+    labels: [[documentation, evals]]
+    reason: "AFR #14: the judge rubric is a written document; documentation fits too"
+  "20":
+    labels: [[documentation, evals]]
+    reason: "AFR #14: the comparison is a written report; labelled on s19, the paraphrase of #20"
+  "26":
+    labels: [[infra, mcp]]
+    reason: "AFR #14: the issue containerises the MCP server; mcp fits too"
+  "33":
+    labels: [[documentation, infra]]
+    reason: "AFR #14: launching and going public is infra work as well; infra fits too"

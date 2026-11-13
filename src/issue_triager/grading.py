@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from issue_triager.dataset import GroundTruth, TriageCase
+from issue_triager.dataset import TRUTH_FIELDS, GroundTruth, TriageCase
 
-FIELDS = ("labels", "milestone", "duplicate_of", "regression_of")
+FIELDS = TRUTH_FIELDS
 NONE = "(none)"  # span attributes can't be null
 
 Attribute = str | list[str]
@@ -29,11 +29,22 @@ def _normal(name: str, value: Any) -> Any:
 
 
 def grade_fields(decision: dict[str, Any], truth: GroundTruth) -> dict[str, bool]:
-    """Whether each field of the decision matches the ground truth."""
-    return {
-        name: _normal(name, decision.get(name)) == _normal(name, getattr(truth, name))
-        for name in FIELDS
-    }
+    """Whether each field of the decision matches the ground truth, or an answer it also
+    accepts (a debatable truth, AFR #14)."""
+    marks: dict[str, bool] = {}
+    for name in FIELDS:
+        decided = _normal(name, decision.get(name))
+        right = [getattr(truth, name), *getattr(truth.accept, name)]
+        marks[name] = any(decided == _normal(name, answer) for answer in right)
+    return marks
+
+
+def _answer(name: str, value: Any) -> str:
+    """An accepted answer as a span attribute string: labels joined, null as (none)."""
+    value = _normal(name, value)
+    if name == "labels":
+        return ", ".join(value) or NONE
+    return value or NONE
 
 
 def _shown(prefix: str, values: dict[str, Any]) -> dict[str, Attribute]:
@@ -52,6 +63,11 @@ def grade_attributes(state: dict[str, Any], case: TriageCase) -> dict[str, Attri
     truth = {name: getattr(case.truth, name) for name in FIELDS}
     attributes: dict[str, Attribute] = {"triager.case_source": case.source}
     attributes |= _shown("triager.expected", truth)
+    if case.accept_reason:
+        attributes["triager.accept_reason"] = case.accept_reason
+    for name in FIELDS:
+        if answers := getattr(case.truth.accept, name):
+            attributes[f"triager.accepted.{name}"] = [_answer(name, a) for a in answers]
     decision = state.get("decision")
     if state.get("status") == "failed" or not isinstance(decision, dict):
         return attributes | {"triager.grade": "failed"}

@@ -9,6 +9,8 @@
 #                   unless duplicate_of says so; near-duplicates are deliberate
 #                   hard negatives.
 # truth.milestone: null  means the work is outside the plan and gets no milestone.
+# truth.accept          other answers that also count as right, per field, for a
+#                        debatable case (e.g. accept: {duplicate_of: [null]}).
 #                        Such a case can't be stretch (see rules.yaml).
 #
 # Duplicate vs regression (both point at an earlier issue, never both at once):
@@ -552,7 +554,9 @@ cases:
     body: |
       Score the analyst's clusters and suggested cases against the failure labels I
       wrote by hand, and report precision and recall.
-    truth: {labels: [analyst, evals], milestone: "Week 4: Analyst, MCP and deploy", duplicate_of: "23"}
+    # AFR #14: debatable whether this duplicates #23, so "no duplicate" is accepted too.
+    truth: {labels: [analyst, evals], milestone: "Week 4: Analyst, MCP and deploy", duplicate_of: "23",
+            accept: {duplicate_of: [null]}}
 
   # Wrong timing: work that sounds early but depends on later issues.
   - id: s59
@@ -613,9 +617,9 @@ cases:
 
   - id: s65
     kind: tricky
-    note: "Regression of #2 written like a new feature request."
+    note: "Reads like a feature request but reports lost behaviour (retries llm-ping used to do). No done issue promised retries (#2 is only the provider config), so it's a plain bug, not a regression (AFR #14)."
     title: Add retries when the provider returns 503
     body: |
       Gemini's "high demand" 503s now fail llm-ping straight away. The client used to
       retry these a couple of times before giving up.
-    truth: {labels: [demo-agent], milestone: "Week 1: Demo agent and foundations", regression_of: "2"}
+    truth: {labels: [demo-agent], milestone: "Week 1: Demo agent and foundations"}

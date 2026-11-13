@@ -77,6 +77,26 @@ class TriageInput(_Frozen):
     body: str
 
 
+TRUTH_FIELDS = ("labels", "milestone", "duplicate_of", "regression_of")
+
+
+class Accepted(_Frozen):
+    """Other answers that also count as right, per field, for a debatable or under-labelled
+    truth (AFR #14). Grading compares them like the truth: labels as sets, ids without #."""
+
+    labels: tuple[frozenset[str], ...] = ()
+    milestone: tuple[str | None, ...] = ()
+    duplicate_of: tuple[str | None, ...] = ()
+    regression_of: tuple[str | None, ...] = ()
+
+    def merged(self, other: Accepted) -> Accepted:
+        """Both sets of answers, each once, in order."""
+        return Accepted.model_validate({
+            name: tuple(dict.fromkeys((*getattr(self, name), *getattr(other, name))))
+            for name in TRUTH_FIELDS
+        })  # fmt: skip
+
+
 class GroundTruth(_Frozen):
     """The triage decision the agent is graded against.
 
@@ -92,6 +112,8 @@ class GroundTruth(_Frozen):
     milestone: str | None
     duplicate_of: str | None = None
     regression_of: str | None = None
+    accept: Accepted = Accepted()
+    """Other answers that also count as right (synthetic.yaml or accepted_answers.yaml)."""
 
     @model_validator(mode="after")
     def _one_relation(self) -> Self:
@@ -113,6 +135,8 @@ class TriageCase(_Frozen):
     """For paraphrases: the real issue this rewords."""
     note: str = ""
     """For tricky cases: what makes the case hard."""
+    accept_reason: str = ""
+    """Why answers other than the exported truth are accepted (accepted_answers.yaml)."""
 
     def agent_input(self) -> TriageInput:
         return TriageInput(id=self.id, title=self.title, body=self.body)
@@ -190,7 +214,50 @@ def load_dataset(path: Path = DEFAULT_DATASET) -> Dataset:
     rules = Rules()
     if (path / "rules.yaml").exists():
         rules = Rules.model_validate(yaml.safe_load((path / "rules.yaml").read_text("utf-8")))
-    return Dataset(path=path, repo=repo, real=issues.issues, synthetic=synthetic, rules=rules)
+    real = issues.issues
+    if (path / "accepted_answers.yaml").exists():
+        raw = yaml.safe_load((path / "accepted_answers.yaml").read_text(encoding="utf-8"))
+        answers = AcceptedAnswers.model_validate(raw or {})
+        real, synthetic = _with_accepted(real, synthetic, answers)
+    return Dataset(path=path, repo=repo, real=real, synthetic=synthetic, rules=rules)
+
+
+class AcceptEntry(Accepted):
+    reason: str = Field(pattern=r"\S")
+    """Why these answers count too; recorded on graded runs (triager.accept_reason)."""
+
+
+class AcceptedAnswers(_Frozen):
+    """accepted_answers.yaml: answers accepted besides real issues' exported truth."""
+
+    accept: dict[str, AcceptEntry] = Field(default_factory=dict[str, AcceptEntry])
+
+
+def _accepting(case: TriageCase, entry: AcceptEntry) -> TriageCase:
+    extra = Accepted.model_validate({name: getattr(entry, name) for name in TRUTH_FIELDS})
+    truth = case.truth.model_copy(update={"accept": case.truth.accept.merged(extra)})
+    return case.model_copy(update={"truth": truth, "accept_reason": entry.reason})
+
+
+def _with_accepted(
+    real: list[TriageCase], synthetic: list[TriageCase], answers: AcceptedAnswers
+) -> tuple[list[TriageCase], list[TriageCase]]:
+    """Real cases with their accepted answers, and every synthetic duplicate of them (a
+    paraphrase or a tricky duplicate) with the same: they ask for the same work. The truth
+    itself, and so what the agent's tools show, stays as exported."""
+    known = {case.id for case in real}
+    unknown = sorted(set(answers.accept) - known)
+    if unknown:
+        raise ValueError(f"accepted_answers: {unknown} aren't real issues in the export")
+    return (
+        [_accepting(c, answers.accept[c.id]) if c.id in answers.accept else c for c in real],
+        [
+            _accepting(c, answers.accept[c.truth.duplicate_of])
+            if c.truth.duplicate_of in answers.accept
+            else c
+            for c in synthetic
+        ],
+    )
 
 
 def dataset_dir_name(repo: str) -> str:
