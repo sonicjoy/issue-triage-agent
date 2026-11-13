@@ -83,6 +83,35 @@ def test_grade_attributes_say_correct_wrong_or_failed() -> None:
     assert "triager.grade.labels" not in failed
 
 
+def test_grade_attributes_show_what_was_decided_and_what_was_expected() -> None:
+    """#14: a labeller reads the decision next to the truth, so both go on the root span."""
+    from issue_triager.grading import grade_attributes
+
+    truth = REAL_19.truth
+    decision = {"labels": ["infra", "evals"], "milestone": None, "duplicate_of": "#3",
+                "regression_of": None}  # fmt: skip
+
+    marks = grade_attributes({"status": "applied", "decision": decision}, REAL_19)
+
+    assert marks["triager.decided.labels"] == ["evals", "infra"]  # sorted, a string list
+    assert marks["triager.decided.milestone"] == "(none)"
+    assert marks["triager.decided.duplicate_of"] == "3"  # compared without the #
+    assert marks["triager.decided.regression_of"] == "(none)"
+    assert marks["triager.expected.labels"] == sorted(truth.labels)
+    assert marks["triager.expected.milestone"] == (truth.milestone or "(none)")
+    assert marks["triager.expected.duplicate_of"] == (truth.duplicate_of or "(none)")
+    assert marks["triager.expected.regression_of"] == (truth.regression_of or "(none)")
+
+
+def test_a_failed_run_shows_only_what_was_expected() -> None:
+    from issue_triager.grading import grade_attributes
+
+    failed = grade_attributes({"status": "failed", "decision": None}, REAL_19)
+
+    assert failed["triager.expected.labels"] == sorted(REAL_19.truth.labels)
+    assert not any(key.startswith("triager.decided.") for key in failed)
+
+
 def test_the_root_span_carries_the_grade(
     clean_env: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -101,8 +130,11 @@ def test_the_root_span_carries_the_grade(
     assert root["triager.grade"] in ("correct", "wrong")
     assert root["triager.grade.labels"] in ("ok", "wrong")
     assert root["triager.triage_model"] == "openai:gpt-5.4-nano"
+    assert root["triager.expected.milestone"] == REAL_19.truth.milestone
+    assert "triager.decided.labels" in root
     child_text = json.dumps([a for a in spans if a is not root])
     assert "triager.grade" not in child_text  # the agent's own spans never see the truth
+    assert "triager.expected" not in child_text
 
 
 # ---- the plan --------------------------------------------------------------------

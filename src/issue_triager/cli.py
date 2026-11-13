@@ -32,7 +32,7 @@ from issue_triager.dataset import (
     load_dataset,
 )
 from issue_triager.export import export as export_dataset
-from issue_triager.grading import grade_attributes, grade_fields
+from issue_triager.grading import Attribute, grade_attributes, grade_fields
 from issue_triager.graph import Models, TriageState, Usage, build_graph
 from issue_triager.recording import (
     Recording,
@@ -128,7 +128,7 @@ def show_review(state: dict[str, Any], case: TriageCase) -> None:
 
 def finish_root(
     recording: Recording | None, span: Any, state: dict[str, Any], case: TriageCase, model: str
-) -> dict[str, str]:
+) -> dict[str, Attribute]:
     """Put the grade on the run's root span and say how it ended; returns the grade."""
     grades = grade_attributes(state, case)
     if recording is not None and span is not None:
@@ -400,7 +400,7 @@ def batch(
             raise RunError(error, trace_id) from error
         return Outcome(
             status=str(state.get("status")),
-            grade=grades["triager.grade"],
+            grade=str(grades["triager.grade"]),
             cost_usd=usage_cost(state.get("usage", [])),
             trace_id=trace_id,
             injected=tuple(injector.injected),
