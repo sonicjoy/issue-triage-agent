@@ -1,0 +1,32 @@
+id: '16'
+tags:
+- wrong-duplication
+note: 'real-mini: right 0 of 2; duplicate_of wrong 2 of 2. Error analysis: overlap with #14 taken for
+  a duplicate.'
+input:
+  id: '16'
+  title: Golden eval cases from labelled failures
+  body: |-
+    **Done when**
+    - Every failure mode from the error analysis has cases in `evals/cases/*.yaml` (input, expected labels or behaviour, checks)
+    - Cases are reviewed in PRs like code
+
+    Estimate: ~0.5h
+
+    Plan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md
+  model: openai:gpt-5.4-mini
+  dataset: f66daf3de203
+checks:
+- type: equals
+  field: labels
+  value:
+  - evals
+- type: equals
+  field: milestone
+  value: 'Week 3: Evals and guardrails'
+- type: equals
+  field: duplicate_of
+  value: null
+- type: equals
+  field: regression_of
+  value: null

@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fakes import call, decide
+from fakes import models as langgraph_models
 from test_recording import Collector, collector  # noqa: F401  (fixture)
-from test_triager import DATA, call, decide
-from test_triager import models as langgraph_models
+from test_triager import DATA
 from typer.testing import CliRunner
 
 from issue_triager import cli

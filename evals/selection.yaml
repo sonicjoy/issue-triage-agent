@@ -1,0 +1,62 @@
+# Which dataset cases make the eval suite, and why (AFR #16). Edit by hand, then run
+# `uv run triager suite` to rewrite evals/cases/triager/; a test fails until you do.
+#
+# The truth comes from the dataset, never from here. Each note says what the 12 November
+# corpus shows, re-graded per field against today's truth (real-mini: every real issue
+# twice on gpt-5.4-mini; synthetic-nano: one run on gpt-5.4-nano), then why the case is in.
+#
+# Rules (AFR docs/designs/triager-suite.md, "The selection"): every failure mode from the
+# error analysis at least once; counter-cases for each field that can be nothing; three
+# controls right in both real-mini runs. A failure-mode case stays even if it's flaky; a
+# case is left out for flakiness only when steadier cases cover all its tags (#12 is out).
+#
+# Changing the model makes every case stale: it needs a live run and a new baseline.
+
+model: openai:gpt-5.4-mini
+
+cases:
+  - id: s47
+    tags: [extra-label, missed-regression]
+    note: "synthetic-nano: one run, wrong (labels, milestone, regression_of). Error analysis: padded the labels and saw the regression in its own words without linking #1."
+  - id: "16"
+    tags: [wrong-duplication]
+    note: "real-mini: right 0 of 2; duplicate_of wrong 2 of 2. Error analysis: overlap with #14 taken for a duplicate."
+  - id: "20"
+    tags: [wrong-duplication]
+    note: "real-mini: right 0 of 2; duplicate_of wrong 2 of 2, labels wrong 1 of 2 (flaky). Called a duplicate of #15."
+  - id: "28"
+    tags: [wrong-label]
+    note: "real-mini: right 0 of 2; labels wrong 2 of 2, duplicate_of wrong 1 of 2 (flaky). Error analysis: chose the area (recorder) over the planning label (stretch)."
+  - id: "4"
+    tags: [wrong-milestone, wrong-label]
+    note: "real-mini: right 0 of 2; labels wrong 2 of 2, milestone wrong 1 of 2 (flaky). Error analysis: a wrong label pulled the milestone with it."
+  - id: "30"
+    tags: [missed-label]
+    note: "real-mini: right 0 of 2; labels wrong 2 of 2. Error analysis: saw only the README side and missed infra."
+  - id: s62
+    tags: [missed-regression]
+    note: "synthetic-nano: one run, wrong (labels, milestone, regression_of). Error analysis: used the word regression without linking #2."
+  - id: "1"
+    tags: [extra-label, accepted-answer]
+    note: "real-mini: right 2 of 2 with the accepted answer. Over-labelling (documentation, infra) that #14 accepted."
+  - id: s58
+    tags: [debatable-truth]
+    note: "synthetic-nano: one run, labels wrong. A debatable duplicate of #23: both answers are accepted."
+  - id: "3"
+    tags: [true-duplicate]
+    note: "real-mini: right 0 of 2; labels wrong 2 of 2, duplicate_of right 2 of 2. The only real duplicate (of #2)."
+  - id: s61
+    tags: [true-regression]
+    note: "synthetic-nano: one run, wrong (milestone, regression_of). A real regression of #1."
+  - id: s50
+    tags: [no-milestone]
+    note: "synthetic-nano: one run, wrong (labels, milestone). Out of scope: no milestone."
+  - id: "5"
+    tags: [control]
+    note: "real-mini: right 2 of 2. A control: catches the agent getting worse."
+  - id: "9"
+    tags: [control]
+    note: "real-mini: right 2 of 2. A control: catches the agent getting worse."
+  - id: "19"
+    tags: [control]
+    note: "real-mini: right 2 of 2. A control: catches the agent getting worse."
