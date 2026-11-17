@@ -34,3 +34,4 @@ Thumbs.db
 runs/
 # Datasets exported with `triager export` (other people's issues: don't commit)
 /datasets/
+.codegraph/
