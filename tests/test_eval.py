@@ -12,7 +12,7 @@ import yaml
 from fakes import FakeModel, decide, scripted
 from flight_recorder.evals import MARK
 from flight_recorder.evals.cases import load
-from flight_recorder.evals.checks import canonical
+from flight_recorder.evals.checks import canonical, run_checks
 from langchain_core.messages import AIMessage
 from typer.testing import CliRunner
 
@@ -173,11 +173,22 @@ def test_triage_is_marked_as_an_agent() -> None:
     assert getattr(suite.triage, MARK) is True
 
 
-def test_triage_returns_the_normalised_fields_and_meta(calls: Calls, tmp_path: Path) -> None:
+def test_triage_returns_the_normalised_fields_and_meta(
+    calls: Calls, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls.models += [
         scripted(decide(labels=["infra", "evals"], duplicate_of="#5")),
         comment(),
     ]
+    made: list[Path] = []
+    real = suite.tempfile.TemporaryDirectory
+
+    def recorded(*args: Any, **kwargs: Any) -> Any:
+        folder = real(*args, **kwargs)
+        made.append(Path(folder.name))
+        return folder
+
+    monkeypatch.setattr(suite.tempfile, "TemporaryDirectory", recorded)
 
     output = suite.triage(given())
 
@@ -190,6 +201,23 @@ def test_triage_returns_the_normalised_fields_and_meta(calls: Calls, tmp_path: P
     }
     assert calls.specs == [SPEC, SPEC]
     assert list(tmp_path.iterdir()) == []
+    assert len(made) == 1 and not made[0].exists()  # the dry-run folder is gone
+
+
+def test_no_decision_fails_every_check(calls: Calls) -> None:
+    calls.models += [
+        scripted(AIMessage(content="Not sure."), AIMessage(content="Still not sure.")),
+        comment(),
+    ]
+    case = DATA.by_id["s50"]  # truth: milestone, duplicate_of and regression_of all empty
+
+    output = suite.triage(given("s50"))
+
+    assert output["meta"]["status"] == "failed"
+    assert {output[name] for name in ("labels", "milestone", "duplicate_of", "regression_of")} == {
+        suite.NO_DECISION
+    }
+    assert not any(r.passed for r in run_checks(suite.checks_for(case), output))
 
 
 def test_a_failed_validation_is_an_answer(calls: Calls) -> None:
@@ -210,9 +238,10 @@ def test_a_failed_validation_is_an_answer(calls: Calls) -> None:
         ({"dataset": "000000000000"}, "dataset"),
         ({"id": "999"}, "999"),
         ({"title": "Another title"}, "title"),
+        ({"body": "Another body"}, "body"),
         ({"model": None}, "model"),
     ],
-    ids=["hash", "unknown-id", "title", "no-model"],
+    ids=["hash", "unknown-id", "title", "body", "no-model"],
 )
 def test_triage_refuses_a_case_written_for_another_dataset(
     calls: Calls, changes: dict[str, Any], message: str
@@ -357,6 +386,7 @@ def test_the_command_writes_the_suite_and_keeps_outputs(
     folder = tmp_path / "evals" / "cases" / "triager"
     (folder / "old.yaml").write_text("id: old\n", encoding="utf-8")
     (folder / "outputs.jsonl").write_text("kept\n", encoding="utf-8")
+    (folder / "baseline.json").write_text("{}\n", encoding="utf-8")
     (tmp_path / "evals" / "selection.yaml").write_text(
         f"model: {SPEC}\ncases:\n- {{id: '3', tags: [a], note: n}}\n", encoding="utf-8"
     )
@@ -364,8 +394,14 @@ def test_the_command_writes_the_suite_and_keeps_outputs(
     result = runner.invoke(cli.app, ["suite"])
 
     assert result.exit_code == 0, result.output
-    assert sorted(p.name for p in folder.iterdir()) == ["3.yaml", "outputs.jsonl", "suite.yaml"]
+    assert sorted(p.name for p in folder.iterdir()) == [
+        "3.yaml",
+        "baseline.json",
+        "outputs.jsonl",
+        "suite.yaml",
+    ]
     assert (folder / "outputs.jsonl").read_text(encoding="utf-8") == "kept\n"
+    assert (folder / "baseline.json").read_text(encoding="utf-8") == "{}\n"
     assert b"\r\n" not in (folder / "3.yaml").read_bytes()
 
 
@@ -382,6 +418,19 @@ def test_the_command_refuses_an_unknown_id(monkeypatch: pytest.MonkeyPatch, tmp_
     assert "999" in result.output
 
 
+def test_the_command_refuses_a_selection_that_isnt_yaml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "evals").mkdir()
+    (tmp_path / "evals" / "selection.yaml").write_text("cases: [unclosed\n", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["suite"])
+
+    assert result.exit_code == 2
+    assert "isn't valid YAML" in result.output
+
+
 # ---- the committed suite ---------------------------------------------------------
 
 
@@ -393,5 +442,5 @@ def test_the_committed_suite_matches_the_dataset() -> None:
     found = {p.name: p.read_text(encoding="utf-8") for p in folder.glob("*.yaml")}
 
     assert sorted(found) == sorted(expected), "run `uv run triager suite`"
-    for name, text in expected.items():
-        assert found[name] == text, f"{name} differs from the dataset: run `uv run triager suite`"
+    differ = sorted(name for name, text in expected.items() if found[name] != text)
+    assert not differ, f"{', '.join(differ)} differ from the dataset: run `uv run triager suite`"
