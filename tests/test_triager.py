@@ -1,12 +1,9 @@
 import json
-import uuid
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from fakes import call, decide, models
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -30,46 +27,6 @@ STILL_OPEN = next(
     for c in DATA.corpus.values()
     if c.state != "closed" and not c.truth.duplicate_of and c.id != "19"  # 19: the triaged one
 )
-
-
-class FakeModel(GenericFakeChatModel):
-    """Replays scripted messages; ignores tool binding like a model that just complies."""
-
-    def bind_tools(self, tools: Any, **kwargs: Any) -> "FakeModel":  # type: ignore[override]
-        return self
-
-
-def scripted(*messages: AIMessage) -> FakeModel:
-    return FakeModel(messages=iter(messages))
-
-
-def call(name: str, args: dict[str, Any]) -> AIMessage:
-    return AIMessage(
-        content="", tool_calls=[{"name": name, "args": args, "id": f"call_{uuid.uuid4().hex[:8]}"}]
-    )
-
-
-def decide(**overrides: Any) -> AIMessage:
-    args = {
-        "labels": ["evals", "infra"],
-        "milestone": "Week 3: Evals and guardrails",
-        "duplicate_of": None,
-        "regression_of": None,
-        "confidence": 0.8,
-        "rationale": "CI for evals.",
-    } | overrides
-    return call("TriageDecision", args)
-
-
-def models(
-    triage: Iterator[AIMessage] | FakeModel, comment: str = "Looks like evals work."
-) -> Models:
-    return Models(
-        triage=triage if isinstance(triage, FakeModel) else FakeModel(messages=triage),
-        comment=scripted(AIMessage(content=comment)),
-        triage_spec="openai:gpt-5.4-nano",
-        comment_spec="openai:gpt-5.4-nano",
-    )
 
 
 def run(case_id: str, m: Models, tmp_path: Path, *, approve: bool) -> dict[str, Any]:

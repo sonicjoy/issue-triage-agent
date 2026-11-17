@@ -1,0 +1,29 @@
+id: s58
+tags:
+- debatable-truth
+note: 'synthetic-nano: one run, labels wrong. A debatable duplicate of #23: both answers are accepted.'
+input:
+  id: s58
+  title: How good is the failure clustering?
+  body: |
+    Score the analyst's clusters and suggested cases against the failure labels I
+    wrote by hand, and report precision and recall.
+  model: openai:gpt-5.4-mini
+  dataset: f66daf3de203
+checks:
+- type: equals
+  field: labels
+  value:
+  - analyst
+  - evals
+- type: equals
+  field: milestone
+  value: 'Week 4: Analyst, MCP and deploy'
+- type: one_of
+  field: duplicate_of
+  values:
+  - '23'
+  - null
+- type: equals
+  field: regression_of
+  value: null

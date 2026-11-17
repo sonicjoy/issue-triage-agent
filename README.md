@@ -87,6 +87,20 @@ uv run triager batch batches/afr-corpus.yaml --record http://127.0.0.1:4318   # 
 - **Errors, by type:** a rate limit or an overloaded provider backs off (15 s, doubling) and tries again, up to 6 times; each attempt is its own trace, marked `triager.batch.attempt`, and the manifest names the last. A spent daily quota, an account out of credit or a missing API key stops that provider's runs, and the other providers carry on. Any other error is recorded and the batch goes on. The command exits 1 if any run errored or a provider stopped.
 - **Grades on the trace:** with recording on, each run's root span gets its grade against the real triage: `triager.grade` (`correct`, `wrong` or `failed`) and `triager.grade.labels`, `.milestone`, `.duplicate_of` and `.regression_of` (`ok` or `wrong`). A field is `ok` when it matches the exported truth or an accepted alternative. The span also gets `triager.expected.*` (the exported truth), `triager.decided.*` (the decision, when there was one), `triager.case_source` and `triager.triage_model`. When a case accepts more than the exported truth, it also gets `triager.accepted.<field>` and `triager.accept_reason`. `triager run` adds the same attributes. They're set after the triage ends and never reach the agent's prompt or its own spans.
 
+## Eval suite
+
+`evals/cases/triager/` is the triager's golden suite for [Agent Flight Recorder's eval harness](https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/evals/harness.md) (`afr eval`, installed with the dependencies). It holds 15 cases chosen from the bundled dataset: every failure mode from the recorder's error analysis, cases where each of `milestone`, `duplicate_of` and `regression_of` should be empty and where it shouldn't, and three controls the agent got right. Each case checks the four fields against the dataset's truth, with `one_of` where other answers are accepted. The harness calls `issue_triager.eval:triage`, which triages the case and resumes the review step with approve; the dry-run file goes to a temporary folder.
+
+```bash
+uv run afr eval run --suite triager      # live: 15 triages on gpt-5.4-mini, under $0.15; needs OPENAI_API_KEY
+uv run afr eval grade --suite triager    # no model calls: grade the saved outputs against the baseline
+```
+
+- **Noise is normal.** Two runs of the same issue agreed on a field 86% of the time, so most live runs show some checks moving. To measure a change, copy `outputs.jsonl` aside, run again, and believe only what moved in both runs. Accept the second run with `uv run afr eval grade --suite triager --accept` only if it shows those same changes, then commit `outputs.jsonl` and `baseline.json`; otherwise restore `outputs.jsonl` (`git restore`), or CI grades the run you didn't accept. Never accept a run with error outcomes: an error means the agent couldn't run (a missing key, a persistent rate limit), not that it answered wrongly.
+- **Each input pins what the answer depends on:** the model, and a hash of everything the agent can see besides the issue (every real issue as the search tools show it, `repo.json` and `rules.yaml`). Changing either makes every case stale until the suite is run again.
+- **The dataset is the only copy of the truth.** [evals/selection.yaml](evals/selection.yaml) lists which cases are in and why; `uv run triager suite` rewrites the case files from it and the dataset, and a test fails when they differ. Editing an accepted answer only changes checks (`afr eval grade --accept`, no model calls); editing what the agent can see needs a live run.
+- **CI** runs `afr eval grade --suite triager`. Green means the saved outputs still grade as accepted, not that the current code would answer the same: a code change touches no input, so only a live run shows its effect.
+
 ## Other options
 
 | Option | Default | |

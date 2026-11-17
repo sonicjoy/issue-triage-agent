@@ -1,0 +1,40 @@
+id: '1'
+tags:
+- extra-label
+- accepted-answer
+note: 'real-mini: right 2 of 2 with the accepted answer. Over-labelling (documentation, infra) that #14
+  accepted.'
+input:
+  id: '1'
+  title: Set up Python tooling and CI
+  body: |-
+    Foundation for everything else. The triager lives in this repo from week 1, so set up tooling now rather than in week 2.
+
+    **Done when**
+    - `uv` project on Python 3.12+, with a `src/flight_recorder` package and an `afr` CLI entry point
+    - ruff (lint + format), pyright and pytest run in pre-commit and in GitHub Actions on every PR
+    - gitleaks runs in pre-commit and CI; a fake key in a test commit is blocked
+    - `.env.example` documents every setting
+    - A PR template with a `Closes #` line and a short checklist (tests, docs)
+
+    Estimate: ~1h
+
+    Plan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md
+  model: openai:gpt-5.4-mini
+  dataset: f66daf3de203
+checks:
+- type: one_of
+  field: labels
+  values:
+  - - infra
+  - - documentation
+    - infra
+- type: equals
+  field: milestone
+  value: 'Week 1: Demo agent and foundations'
+- type: equals
+  field: duplicate_of
+  value: null
+- type: equals
+  field: regression_of
+  value: null

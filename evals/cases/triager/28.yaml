@@ -1,0 +1,32 @@
+id: '28'
+tags:
+- wrong-label
+note: 'real-mini: right 0 of 2; labels wrong 2 of 2, duplicate_of wrong 1 of 2 (flaky). Error analysis:
+  chose the area (recorder) over the planning label (stretch).'
+input:
+  id: '28'
+  title: Record the recorder's own agents
+  body: |-
+    **Done when**
+    - The analyst agent and the LLM judge export OTel traces to the recorder, and their runs show up like any other
+
+    Estimate: ~0.5h
+
+    Plan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md
+  model: openai:gpt-5.4-mini
+  dataset: f66daf3de203
+checks:
+- type: equals
+  field: labels
+  value:
+  - analyst
+  - stretch
+- type: equals
+  field: milestone
+  value: 'Week 4: Analyst, MCP and deploy'
+- type: equals
+  field: duplicate_of
+  value: null
+- type: equals
+  field: regression_of
+  value: null

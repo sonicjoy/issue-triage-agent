@@ -14,11 +14,11 @@ import pytest
 from agents import add_trace_processor, set_trace_processors
 from agents.tracing import TracingProcessor
 from agents.tracing.processors import default_processor
+from fakes import call, decide
+from fakes import models as langgraph_models
 from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
 from test_agents_sdk import apply, search
 from test_agents_sdk import models as sdk_models
-from test_triager import call, decide
-from test_triager import models as langgraph_models
 from typer.testing import CliRunner
 
 from issue_triager import agents_sdk, cli, recording

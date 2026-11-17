@@ -1,0 +1,35 @@
+id: '3'
+tags:
+- true-duplicate
+note: 'real-mini: right 0 of 2; labels wrong 2 of 2, duplicate_of right 2 of 2. The only real duplicate
+  (of #2).'
+input:
+  id: '3'
+  title: Provider-switchable LLM config
+  body: |-
+    One setting chooses Anthropic or OpenAI for every agent and the judge, so runs, evals and costs can be compared across providers.
+
+    **Done when**
+    - `AFR_LLM_MODEL` (e.g. `anthropic:claude-sonnet-5-5`) and `AFR_LLM_CHEAP_MODEL` (e.g. `anthropic:claude-haiku-5-5`) accept either provider via LangChain `init_chat_model`
+    - `pricing.yaml` holds per-model token prices used for cost calculation
+    - A smoke test calls each provider with the same prompt and is skipped when that provider's key is missing
+
+    Estimate: ~0.5h
+
+    Plan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md
+  model: openai:gpt-5.4-mini
+  dataset: f66daf3de203
+checks:
+- type: equals
+  field: labels
+  value:
+  - demo-agent
+- type: equals
+  field: milestone
+  value: 'Week 1: Demo agent and foundations'
+- type: equals
+  field: duplicate_of
+  value: '2'
+- type: equals
+  field: regression_of
+  value: null

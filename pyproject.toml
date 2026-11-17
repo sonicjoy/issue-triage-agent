@@ -35,6 +35,13 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = "issue_triager"
 
+[tool.uv]
+# Dependencies must be at least two weeks old. Temporary holds, set 17 Nov 2026, for releases
+# newer than that (fastapi, numpy, onnxruntime, psycopg, sqlalchemy). agent-flight-recorder needs
+# psycopg>=3.3.8 and sqlalchemy>=2.1.8 (4 Nov, one day short), so those are held at the versions
+# its own lock already uses. Remove each hold once the newer release is two weeks old.
+exclude-newer-package = { fastapi = "2026-11-03T00:00:00Z", numpy = "2026-11-03T00:00:00Z", onnxruntime = "2026-11-03T00:00:00Z", psycopg = "2026-11-05T00:00:00Z", psycopg-binary = "2026-11-05T00:00:00Z", sqlalchemy = "2026-11-05T00:00:00Z" }
+
 [tool.uv.sources]
 agent-flight-recorder = { git = "https://github.com/sonicjoy/agent-flight-recorder", branch = "main" }
 

@@ -1,0 +1,58 @@
+id: '5'
+tags:
+- control
+note: 'real-mini: right 2 of 2. A control: catches the agent getting worse.'
+input:
+  id: '5'
+  title: Build the LangGraph issue triager
+  body: |-
+    The demo agent whose runs the recorder captures. Keep it deliberately imperfect so it produces real failures to study.
+
+    **Done when**
+    - LangGraph state graph: read issue -> search similar issues -> pick area labels, `stretch` or not, milestone, possible duplicate or regression -> draft a triage comment
+    - Tools work only on the fixtures (dry-run); nothing writes to GitHub
+    - Human-in-the-loop interrupt before the "apply" step
+    - `uv run triager --issue <n>` runs end to end on both providers
+    - A flag injects tool failures (timeouts, bad data) for testing
+
+    Estimate: ~3h
+
+    ## Design (agreed 6 Nov)
+
+    ```
+    load_issue -> triage (LLM + tools, loops) -> validate --invalid--> retry triage once, then fail
+                                                    |
+                                                    v ok
+                                          draft_comment (cheap model) -> human_review (interrupt) -> apply (dry-run, local file)
+    ```
+
+    | Part | Decision |
+    |---|---|
+    | Agent loop | Only inside `triage`: the LLM decides when and what to search, possibly several times. Other steps are fixed |
+    | Tools | `search_issues(query)`: top 5 similar issues with labels, week, state. `get_issue(id)`: one issue in full. The target issue never appears in results |
+    | Search | Keyword (BM25) over real issues only, for now. Embeddings come with #11; misses on reworded duplicates are expected, recordable failures |
+    | Input | `case.agent_input()` only: title and body, never the target's labels or milestone |
+    | Decision | Structured output with the same shape as `GroundTruth` plus `confidence` and `rationale`, so grading is a direct comparison |
+    | Validate | Code check: known areas, week 1-5 or none, linked ids exist, stretch needs a week. Retry once, then fail |
+    | Duplicates | Suggested only, worded as a suggestion. Closing a real issue by mistake is worse than missing a duplicate |
+    | Failures | Natural (plain prompt, no tuning, optional cheap model) and injected (`--inject timeout,bad-data,empty,noise --rate`) |
+    | Human review | Interactive y/n; `--yes` auto-approves for batch runs (#13) |
+    | Output | Decision + comment written to `runs/` (git-ignored) as the dry-run "apply" |
+
+    Plan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md
+  model: openai:gpt-5.4-mini
+  dataset: f66daf3de203
+checks:
+- type: equals
+  field: labels
+  value:
+  - demo-agent
+- type: equals
+  field: milestone
+  value: 'Week 1: Demo agent and foundations'
+- type: equals
+  field: duplicate_of
+  value: null
+- type: equals
+  field: regression_of
+  value: null
