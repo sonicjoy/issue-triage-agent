@@ -19,7 +19,7 @@ NONE = "(none)"  # span attributes can't be null
 Attribute = str | list[str]
 
 
-def _normal(name: str, value: Any) -> Any:
+def normal(name: str, value: Any) -> Any:
     """A field's value as it's compared: labels sorted, issue numbers without the #."""
     if name == "labels":
         return sorted(value or [])
@@ -33,15 +33,15 @@ def grade_fields(decision: dict[str, Any], truth: GroundTruth) -> dict[str, bool
     accepts (a debatable truth, AFR #14)."""
     marks: dict[str, bool] = {}
     for name in FIELDS:
-        decided = _normal(name, decision.get(name))
+        decided = normal(name, decision.get(name))
         right = [getattr(truth, name), *getattr(truth.accept, name)]
-        marks[name] = any(decided == _normal(name, answer) for answer in right)
+        marks[name] = any(decided == normal(name, answer) for answer in right)
     return marks
 
 
 def _answer(name: str, value: Any) -> str:
     """An accepted answer as a span attribute string: labels joined, null as (none)."""
-    value = _normal(name, value)
+    value = normal(name, value)
     if name == "labels":
         return ", ".join(value) or NONE
     return value or NONE
@@ -50,7 +50,7 @@ def _answer(name: str, value: Any) -> str:
 def _shown(prefix: str, values: dict[str, Any]) -> dict[str, Attribute]:
     shown: dict[str, Attribute] = {}
     for name in FIELDS:
-        value = _normal(name, values.get(name))
+        value = normal(name, values.get(name))
         shown[f"{prefix}.{name}"] = value if name == "labels" else (value or NONE)
     return shown
 

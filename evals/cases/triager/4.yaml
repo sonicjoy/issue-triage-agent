@@ -1,0 +1,39 @@
+id: '4'
+tags:
+- wrong-milestone
+- wrong-label
+note: 'real-mini: right 0 of 2; labels wrong 2 of 2, milestone wrong 1 of 2 (flaky). Error analysis: a
+  wrong label pulled the milestone with it.'
+input:
+  id: '4'
+  title: Issue fixtures for the triager
+  body: |-
+    The triager triages this project's own issues: they're ours to commit, their labels and milestones are real ground truth, and the agent works on the repo it's recorded in.
+
+    **Done when**
+    - `scripts/export_issues.py` exports this repo's issues (title, body, labels, milestone, state, duplicate links) to `examples/issue_triager/fixtures/issues.json`, committed so CI and the quickstart need no GitHub access
+    - Ground truth per issue: area labels, `stretch` or not, milestone (week), duplicate-of (#3 is a real duplicate of #2)
+    - The agent never sees the target issue's own labels or milestone
+    - About 60 extra cases to make up for the small repo: paraphrased variants of real issues, and hand-written tricky ones (ambiguous area, cross-cutting, near-duplicates), marked as synthetic
+    - The export can be re-run as the issue list grows
+    - Nothing in the project writes to GitHub
+
+    Estimate: ~1h
+
+    Plan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md
+  model: openai:gpt-5.4-mini
+  dataset: f66daf3de203
+checks:
+- type: equals
+  field: labels
+  value:
+  - demo-agent
+- type: equals
+  field: milestone
+  value: 'Week 1: Demo agent and foundations'
+- type: equals
+  field: duplicate_of
+  value: null
+- type: equals
+  field: regression_of
+  value: null

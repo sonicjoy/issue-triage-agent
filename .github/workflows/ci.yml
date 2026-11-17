@@ -56,6 +56,11 @@ jobs:
       - name: Pytest
         run: uv run pytest
 
+      # Grades the saved outputs against the baseline: no model calls, no key. See the
+      # README's "Eval suite" for what a green result does and doesn't mean.
+      - name: Eval suite (no model calls)
+        run: uv run afr eval grade --suite triager
+
   secrets:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest

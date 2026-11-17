@@ -296,6 +296,24 @@ def export(
 
 
 @app.command()
+def suite() -> None:
+    """Write the eval suite (evals/cases/triager/) from the dataset and evals/selection.yaml.
+
+    Run from the repo root. Case files no longer selected are deleted; afr eval's outputs and
+    baseline are left alone. See the README's "Eval suite".
+    """
+    from issue_triager.eval import SELECTION, SUITE_DIR, build_suite, load_selection, write_suite
+
+    try:
+        files = build_suite(load_dataset(DEFAULT_DATASET), load_selection(SELECTION))
+    except (OSError, ValueError) as error:
+        typer.echo(f"error: {error}")
+        raise typer.Exit(2) from error
+    write_suite(files)
+    typer.echo(f"wrote {len(files) - 1} cases and suite.yaml to {SUITE_DIR.as_posix()}")
+
+
+@app.command()
 def batch(
     plan: Annotated[Path, typer.Argument(help="Plan file (YAML): groups of runs")],
     dataset: Annotated[
