@@ -3,7 +3,7 @@
 import hashlib
 import json
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -357,6 +357,20 @@ def test_every_selected_input_round_trips_through_a_case_file() -> None:
 def test_an_unknown_id_is_refused() -> None:
     with pytest.raises(ValueError, match="999"):
         suite.build_suite(DATA, selection("3", "999"))
+
+
+def test_an_id_that_cant_be_a_file_name_is_refused() -> None:
+    bad = DATA.by_id["3"].model_copy(update={"id": "../3"})
+    data = replace(DATA, synthetic=[*DATA.synthetic, bad])
+
+    with pytest.raises(ValueError, match="must be 1 to 64"):
+        suite.build_suite(data, selection("../3"))
+
+
+@pytest.mark.parametrize("empty", [None, "", "#", []])
+def test_an_empty_value_is_graded_as_null(empty: Any) -> None:
+    name = "labels" if isinstance(empty, list) else "duplicate_of"
+    assert suite.graded(name, empty) is None
 
 
 def test_the_selection_refuses_a_duplicate_id_and_reads_numbers_as_text(tmp_path: Path) -> None:
