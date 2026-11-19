@@ -7,16 +7,6 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
-[options]
-
-[options.exclude-newer-package]
-fastapi = "2026-11-03T00:00:00Z"
-numpy = "2026-11-03T00:00:00Z"
-onnxruntime = "2026-11-03T00:00:00Z"
-psycopg = "2026-11-05T00:00:00Z"
-psycopg-binary = "2026-11-05T00:00:00Z"
-sqlalchemy = "2026-11-05T00:00:00Z"
-
 [[package]]
 name = "agent-flight-recorder"
 version = "0.1.0"
