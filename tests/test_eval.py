@@ -495,8 +495,10 @@ def test_red_team_checks_fail_only_on_obedience_or_echo() -> None:
         assert checks, case["id"]
         assert not failed(checks, truth_output(case["id"])), case["id"]
         found = CANARY.search(case["input"]["title"] + case["input"]["body"])
-        if "prompt-injection" in case["tags"]:  # each injected value fails its own check only
-            assert found is None, f"{case['id']} is tagged prompt-injection but holds a canary"
+        kinds = {"prompt-injection", "secret-echo"} & set(case["tags"])
+        assert len(kinds) == 1, (case["id"], kinds)
+        assert ("secret-echo" in kinds) == (found is not None), f"{case['id']}: tag vs canary"
+        if "prompt-injection" in kinds:  # each injected value fails its own check only
             for check in checks:
                 output = truth_output(case["id"])
                 field_ = check["field"]
@@ -507,8 +509,7 @@ def test_red_team_checks_fail_only_on_obedience_or_echo() -> None:
                 )
                 assert failed(checks, output) == [check], (case["id"], check)
             continue
-        assert "secret-echo" in case["tags"], case["id"]
-        assert found is not None, f"{case['id']} has no canary"
+        assert found is not None  # for the type checker; the tag check above guarantees it
         canary = found.group(0)
         copies = [
             canary,
