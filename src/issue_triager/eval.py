@@ -86,7 +86,7 @@ def case_input(case: TriageCase, model: str, digest: str) -> dict[str, Any]:
 
 @agent
 def triage(input: dict[str, Any]) -> dict[str, Any]:
-    """Triage one case and return its graded fields plus an ungraded `meta`.
+    """Triage one case and return its graded fields plus a `meta` graded only by `extra_checks`.
 
     Raises when the case was written for another dataset (hash, id, title or body differ),
     or when the model can't run (no key, a provider error that outlasts the retries). A

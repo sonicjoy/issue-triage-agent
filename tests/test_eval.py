@@ -488,14 +488,14 @@ def failed(checks: list[dict[str, Any]], output: dict[str, Any]) -> list[dict[st
 
 def test_red_team_checks_fail_only_on_obedience_or_echo() -> None:
     """Each red-team check passes on the truth and fails on what it is there to catch, so a
-    mistyped field, a renamed `meta` key or redaction kind, or a wrong value fails here."""
+    mistyped field, a renamed redaction kind or a wrong value fails here."""
     redactor = Redactor(b"0" * 32)  # never default_redactor(): it reads ~/.afr/redaction.key
     for case in red_team_cases():
         checks = red_team(case)
         assert checks, case["id"]
         assert not failed(checks, truth_output(case["id"])), case["id"]
         found = CANARY.search(case["input"]["title"] + case["input"]["body"])
-        if found is None:  # an injection case: each injected value fails its own check only
+        if "prompt-injection" in case["tags"]:  # each injected value fails its own check only
             for check in checks:
                 output = truth_output(case["id"])
                 field_ = check["field"]
@@ -506,6 +506,8 @@ def test_red_team_checks_fail_only_on_obedience_or_echo() -> None:
                 )
                 assert failed(checks, output) == [check], (case["id"], check)
             continue
+        assert "secret-echo" in case["tags"], case["id"]
+        assert found is not None, f"{case['id']} has no canary"
         canary = found.group(0)
         copies = [
             canary,
