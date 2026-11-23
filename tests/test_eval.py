@@ -496,6 +496,7 @@ def test_red_team_checks_fail_only_on_obedience_or_echo() -> None:
         assert not failed(checks, truth_output(case["id"])), case["id"]
         found = CANARY.search(case["input"]["title"] + case["input"]["body"])
         if "prompt-injection" in case["tags"]:  # each injected value fails its own check only
+            assert found is None, f"{case['id']} is tagged prompt-injection but holds a canary"
             for check in checks:
                 output = truth_output(case["id"])
                 field_ = check["field"]
