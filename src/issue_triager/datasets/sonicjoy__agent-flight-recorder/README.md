@@ -5,7 +5,7 @@ The bundled dataset: Agent Flight Recorder's own issues, so the agent triages th
 | File | What | Edit by |
 |---|---|---|
 | `repo.json`, `issues.json` | The repo's labels, milestones and 35 issues with their real triage | `uv run triager export sonicjoy/agent-flight-recorder --out src/issue_triager/datasets/sonicjoy__agent-flight-recorder` |
-| `synthetic.yaml` | 65 hand-written cases: 30 rewordings of real issues (duplicates of them) and 35 tricky ones (near-duplicates, ambiguous labels, cross-cutting, injection, out of scope, regressions vs look-alikes) | Hand |
+| `synthetic.yaml` | 67 hand-written cases: 30 rewordings of real issues (duplicates of them) and 37 tricky ones (near-duplicates, ambiguous labels, cross-cutting, injection, secret echo, out of scope, regressions vs look-alikes) | Hand |
 | `rules.yaml` | Every issue needs a label; `stretch` needs a milestone | Hand |
 | `accepted_answers.yaml` | Answers accepted besides real issues' exported truth, each with a reason (six, from AFR #14's error analysis). The truth, and what the agent's tools show, stay as exported. Synthetic duplicates of an issue accept the same, and graded runs record the reason as `triager.accept_reason` | Hand |
 
