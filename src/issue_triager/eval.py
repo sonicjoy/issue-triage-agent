@@ -2,7 +2,8 @@
 
 - `triage` is the adapter `afr eval run` calls once per case: it triages one dataset case on
   the model the case names and returns the four graded fields (`graded`: normalised as the
-  triager's own grader compares them, an empty value as null), plus an ungraded `meta`.
+  triager's own grader compares them, an empty value as null), plus a `meta` checked only
+  by a selection entry's `extra_checks` (AFR #18).
 - `build_suite` writes the suite's case files from the dataset and `evals/selection.yaml`
   (`triager suite`), so the dataset stays the only copy of every truth.
 - `dataset_hash` is in every case's input: a hash of everything the agent can see besides
@@ -19,7 +20,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Self, cast
+from typing import Any, Literal, Self, cast
 
 import yaml
 from flight_recorder.evals import agent
@@ -85,13 +86,17 @@ def case_input(case: TriageCase, model: str, digest: str) -> dict[str, Any]:
 
 @agent
 def triage(input: dict[str, Any]) -> dict[str, Any]:
-    """Triage one case and return its graded fields plus an ungraded `meta`.
+    """Triage one case and return its graded fields plus a `meta` graded only by `extra_checks`.
 
     Raises when the case was written for another dataset (hash, id, title or body differ),
     or when the model can't run (no key, a provider error that outlasts the retries). A
     decision that still breaks the rules after the agent's retry is returned, with
     `meta.status: "failed"`: it's a wrong answer, not an error. With no decision at all,
     every field is NO_DECISION.
+
+    `meta.rationale` is the decision's rationale and `meta.comment` the drafted comment, so a
+    red-team check can see what the agent would post (AFR #18). Both are always present: None
+    with no decision, and the comment None after a failed validation (none is drafted).
     """
     data = load_dataset(DEFAULT_DATASET)
     case = _case_for(input, data)
@@ -107,6 +112,8 @@ def triage(input: dict[str, Any]) -> dict[str, Any]:
             "model": spec,
             "status": state.get("status"),
             "feedback": state.get("feedback", []),
+            "rationale": None if decision is None else decision.get("rationale"),
+            "comment": state.get("comment"),
         },
     }
 
@@ -164,6 +171,21 @@ def _run_once(case: TriageCase, data: Dataset, spec: str) -> dict[str, Any]:
 # ---- the generator -----------------------------------------------------------------
 
 
+class ExtraCheck(BaseModel):
+    """A check a selection entry adds after the truth checks (AFR #18): a red-team case's
+    `not_contains` on an injected value or on a canary. Only `not_contains` for now, and only
+    the fields an output has, so a mistyped field fails here instead of passing forever."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", coerce_numbers_to_str=True)
+
+    type: Literal["not_contains"]
+    field: Literal[
+        "labels", "milestone", "duplicate_of", "regression_of", "meta.rationale", "meta.comment"
+    ]
+    value: str
+    """Text, as outputs hold it: an unquoted 29 reads as "29"."""
+
+
 class Selected(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", coerce_numbers_to_str=True)
 
@@ -173,6 +195,8 @@ class Selected(BaseModel):
     """Free text for people: the failure modes and fields the case covers."""
     note: str
     """What the corpus shows, then why the case is in."""
+    extra_checks: list[ExtraCheck] = []
+    """Checks after the truth checks, in this order (AFR #18)."""
 
 
 class Selection(BaseModel):
@@ -218,7 +242,8 @@ def checks_for(case: TriageCase) -> list[dict[str, Any]]:
 
 
 def build_suite(data: Dataset, selection: Selection) -> dict[str, str]:
-    """The suite's files, name to text: `suite.yaml` and one `<id>.yaml` per selected case.
+    """The suite's files, name to text: `suite.yaml` and one `<id>.yaml` per selected case,
+    each with its truth checks then the entry's `extra_checks`.
     Raises ValueError for an id that isn't in the dataset or can't be a case file name."""
     digest = dataset_hash(data)
     files = {SUITE_FILE: dump({"agent": AGENT, "model": selection.model})}
@@ -232,7 +257,7 @@ def build_suite(data: Dataset, selection: Selection) -> dict[str, str]:
             "tags": list(selected.tags),
             "note": selected.note,
             "input": case_input(case, selection.model, digest),
-            "checks": checks_for(case),
+            "checks": [*checks_for(case), *(c.model_dump() for c in selected.extra_checks)],
         })  # fmt: skip
     return files
 

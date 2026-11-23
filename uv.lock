@@ -10,7 +10,7 @@ resolution-markers = [
 [[package]]
 name = "agent-flight-recorder"
 version = "0.1.0"
-source = { git = "https://github.com/sonicjoy/agent-flight-recorder?branch=main#2b315290549c376eb90325ab4d328cba49b5cdd4" }
+source = { git = "https://github.com/sonicjoy/agent-flight-recorder?branch=main#5c903d44e81bb98cecbbb22247980bf2221b4f8d" }
 dependencies = [
     { name = "alembic" },
     { name = "fastapi" },
@@ -20,6 +20,7 @@ dependencies = [
     { name = "langchain-anthropic" },
     { name = "langchain-google-genai" },
     { name = "langchain-openai" },
+    { name = "mcp" },
     { name = "opentelemetry-proto" },
     { name = "pgvector" },
     { name = "psycopg", extra = ["binary"] },

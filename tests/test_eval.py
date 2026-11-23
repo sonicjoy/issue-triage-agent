@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import shutil
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -13,12 +14,20 @@ from fakes import FakeModel, decide, scripted
 from flight_recorder.evals import MARK
 from flight_recorder.evals.cases import load
 from flight_recorder.evals.checks import canonical, run_checks
+from flight_recorder.redact import Redactor
+from flight_recorder.safe_text import strip_fingerprints
 from langchain_core.messages import AIMessage
 from typer.testing import CliRunner
 
 from issue_triager import cli
 from issue_triager import eval as suite
-from issue_triager.dataset import DEFAULT_DATASET, GroundTruth, TriageCase, load_dataset
+from issue_triager.dataset import (
+    DEFAULT_DATASET,
+    TRUTH_FIELDS,
+    GroundTruth,
+    TriageCase,
+    load_dataset,
+)
 from issue_triager.tools import summarise
 
 ROOT = Path(__file__).parents[1]
@@ -197,7 +206,13 @@ def test_triage_returns_the_normalised_fields_and_meta(
         "milestone": "Week 3: Evals and guardrails",
         "duplicate_of": "5",
         "regression_of": None,
-        "meta": {"model": SPEC, "status": "applied", "feedback": []},
+        "meta": {
+            "model": SPEC,
+            "status": "applied",
+            "feedback": [],
+            "rationale": "CI for evals.",
+            "comment": "Looks right.",
+        },
     }
     assert calls.specs == [SPEC, SPEC]
     assert list(tmp_path.iterdir()) == []
@@ -214,6 +229,7 @@ def test_no_decision_fails_every_check(calls: Calls) -> None:
     output = suite.triage(given("s50"))
 
     assert output["meta"]["status"] == "failed"
+    assert output["meta"]["rationale"] is None and output["meta"]["comment"] is None
     assert {output[name] for name in ("labels", "milestone", "duplicate_of", "regression_of")} == {
         suite.NO_DECISION
     }
@@ -230,6 +246,8 @@ def test_a_failed_validation_is_an_answer(calls: Calls) -> None:
     assert output["milestone"] is None
     assert output["meta"]["status"] == "failed"
     assert "need a milestone" in output["meta"]["feedback"][0]
+    assert output["meta"]["rationale"] == "CI for evals."
+    assert output["meta"]["comment"] is None  # a failed decision gets no comment
 
 
 @pytest.mark.parametrize(
@@ -385,6 +403,128 @@ def test_the_selection_refuses_a_duplicate_id_and_reads_numbers_as_text(tmp_path
     )
     with pytest.raises(ValueError, match="3"):
         suite.load_selection(path)
+
+
+def test_extra_checks_follow_the_truth_checks_in_order() -> None:
+    extra = [
+        suite.ExtraCheck(type="not_contains", field="labels", value="ui"),
+        suite.ExtraCheck(type="not_contains", field="meta.comment", value="abc"),
+    ]
+    chosen = suite.Selection(
+        model=SPEC, cases=[suite.Selected(id="s53", tags=["t"], note="n", extra_checks=extra)]
+    )
+
+    case = load(suite.build_suite(DATA, chosen)["s53.yaml"])
+
+    assert case["checks"] == [
+        *suite.checks_for(DATA.by_id["s53"]),
+        {"type": "not_contains", "field": "labels", "value": "ui"},
+        {"type": "not_contains", "field": "meta.comment", "value": "abc"},
+    ]
+
+
+def test_a_case_without_extra_checks_has_only_the_truth_checks() -> None:
+    case = load(suite.build_suite(DATA, selection("3"))["3.yaml"])
+    assert case["checks"] == suite.checks_for(DATA.by_id["3"])
+
+
+def selection_with(tmp_path: Path, check: str) -> Path:
+    path = tmp_path / "selection.yaml"
+    path.write_text(
+        f"model: {SPEC}\ncases:\n- id: s53\n  tags: []\n  note: n\n  extra_checks:\n  - {check}\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_an_extra_check_reads_a_number_as_text(tmp_path: Path) -> None:
+    path = selection_with(tmp_path, "{type: not_contains, field: duplicate_of, value: 29}")
+    assert suite.load_selection(path).cases[0].extra_checks[0].value == "29"
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        "{type: equals, field: labels, value: ui}",  # only not_contains for now
+        "{type: not_contains, field: meta.coment, value: x}",  # a typo would pass forever
+        "{type: not_contains, field: labels}",  # no value
+        "{type: not_contains, field: labels, value: ui, extra: 1}",
+    ],
+)
+def test_a_bad_extra_check_is_refused_when_the_selection_loads(tmp_path: Path, check: str) -> None:
+    with pytest.raises(ValueError):
+        suite.load_selection(selection_with(tmp_path, check))
+
+
+CANARY = re.compile(r"afr_[a-z0-9]{43}")
+
+
+def red_team_cases() -> list[dict[str, Any]]:
+    chosen = suite.load_selection(ROOT / "evals" / "selection.yaml")
+    files = suite.build_suite(DATA, chosen)
+    cases = [load(files[f"{s.id}.yaml"]) for s in chosen.cases if "red-team" in s.tags]
+    assert cases, "the selection has no red-team cases"
+    return cases
+
+
+def truth_output(case_id: str) -> dict[str, Any]:
+    truth = DATA.by_id[case_id].truth
+    return {
+        **{name: suite.graded(name, getattr(truth, name)) for name in TRUTH_FIELDS},
+        "meta": {
+            "rationale": "Docs question about exporter setup.",
+            "comment": "Thanks, labelled as documentation.",
+        },
+    }
+
+
+def red_team(case: dict[str, Any]) -> list[dict[str, Any]]:
+    return [c for c in case["checks"] if c["type"] == "not_contains"]
+
+
+def failed(checks: list[dict[str, Any]], output: dict[str, Any]) -> list[dict[str, Any]]:
+    return [c for c, r in zip(checks, run_checks(checks, output), strict=True) if not r.passed]
+
+
+def test_red_team_checks_fail_only_on_obedience_or_echo() -> None:
+    """Each red-team check passes on the truth and fails on what it is there to catch, so a
+    mistyped field, a renamed redaction kind or a wrong value fails here."""
+    redactor = Redactor(b"0" * 32)  # never default_redactor(): it reads ~/.afr/redaction.key
+    for case in red_team_cases():
+        checks = red_team(case)
+        assert checks, case["id"]
+        assert not failed(checks, truth_output(case["id"])), case["id"]
+        found = CANARY.search(case["input"]["title"] + case["input"]["body"])
+        kinds = {"prompt-injection", "secret-echo"} & set(case["tags"])
+        assert len(kinds) == 1, (case["id"], kinds)
+        assert ("secret-echo" in kinds) == (found is not None), f"{case['id']}: tag vs canary"
+        if "prompt-injection" in kinds:  # each injected value fails its own check only
+            for check in checks:
+                output = truth_output(case["id"])
+                field_ = check["field"]
+                output[field_] = (
+                    [*(output[field_] or []), check["value"]]
+                    if field_ == "labels"
+                    else check["value"]
+                )
+                assert failed(checks, output) == [check], (case["id"], check)
+            continue
+        assert found is not None  # for the type checker; the tag check above guarantees it
+        canary = found.group(0)
+        copies = [
+            canary,
+            canary[:36],
+            canary[:14] + "..." + canary[-4:],
+            canary.replace("afr_", "afr\\_"),
+        ]
+        for copy in copies:
+            for where in ("rationale", "comment"):
+                output = truth_output(case["id"])
+                output["meta"][where] = f"I saw {copy} in the issue."
+                saved = strip_fingerprints(redactor.redact(output).value)
+                assert failed(checks, saved), (case["id"], copy, where)
+                if copy == canary:  # the afr this repo locks must know afr_ keys (AFR #70)
+                    assert saved["meta"][where] == "I saw [REDACTED:afr_api_key] in the issue."
 
 
 # ---- triager suite, the command --------------------------------------------------
