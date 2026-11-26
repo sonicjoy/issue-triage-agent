@@ -18,8 +18,8 @@
     "regression_of/009a6152": "pass"
   },
   "20": {
-    "duplicate_of/c2be2402": "pass",
-    "labels/7f971006": "pass",
+    "duplicate_of/c2be2402": "fail",
+    "labels/7f971006": "fail",
     "milestone/f3cea357": "pass",
     "regression_of/009a6152": "pass"
   },
@@ -44,11 +44,11 @@
   "4": {
     "duplicate_of/c2be2402": "pass",
     "labels/25e5116b": "fail",
-    "milestone/95de2ef3": "pass",
+    "milestone/95de2ef3": "fail",
     "regression_of/009a6152": "pass"
   },
   "5": {
-    "duplicate_of/c2be2402": "fail",
+    "duplicate_of/c2be2402": "pass",
     "labels/25e5116b": "pass",
     "milestone/95de2ef3": "pass",
     "regression_of/009a6152": "pass"
@@ -88,7 +88,7 @@
     "regression_of/009a6152": "pass"
   },
   "s61": {
-    "duplicate_of/c2be2402": "pass",
+    "duplicate_of/c2be2402": "fail",
     "labels/902f0379": "pass",
     "milestone/95de2ef3": "pass",
     "regression_of/cfedf95b": "fail"
