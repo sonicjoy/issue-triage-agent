@@ -25,3 +25,4 @@ output
 - [ ] Docs updated (README, `docs/`, `.env.example`) if behaviour or settings changed
 - [ ] `uv run pre-commit run --all-files` passes
 - [ ] Evidence above is real output from this branch
+- [ ] If `evals/cases/**` changed: `suite.yaml` names the expected agent and model, no output in `outputs.jsonl` has an `error`, and `baseline.json` was accepted from the committed outputs

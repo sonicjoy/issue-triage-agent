@@ -1,5 +1,6 @@
 """The eval suite's adapter, dataset hash and generator (AFR #16)."""
 
+import ast
 import hashlib
 import json
 import re
@@ -112,6 +113,65 @@ def test_the_hash_ignores_line_endings(tmp_path: Path) -> None:
     assert suite.dataset_hash(load_dataset(folder)) == suite.dataset_hash(DATA)
 
 
+# ---- the code hash (AFR #19) ------------------------------------------------------
+
+
+def agent_sources() -> dict[str, str]:
+    package = ROOT / "src" / "issue_triager"
+    found = {m: (package / f"{m}.py").read_text(encoding="utf-8") for m in suite.AGENT_MODULES}
+    tree = ast.parse((package / "eval.py").read_text(encoding="utf-8"))
+    run_once = next(n for n in tree.body if getattr(n, "name", None) == "_run_once")
+    lines = (package / "eval.py").read_text(encoding="utf-8").splitlines(keepends=True)
+    found["eval._run_once"] = "".join(lines[run_once.lineno - 1 : run_once.end_lineno])
+    return found
+
+
+def test_the_code_hash_reads_the_agent_modules_and_run_once() -> None:
+    assert suite.code_hash() == suite.code_hash(agent_sources())
+
+
+@pytest.mark.parametrize("name", [*suite.AGENT_MODULES, "eval._run_once"])
+def test_any_edit_to_the_agent_code_changes_the_hash(name: str) -> None:
+    sources = agent_sources()
+    edited = sources | {name: sources[name] + "# an edit\n"}
+
+    assert suite.code_hash(edited) != suite.code_hash(sources)
+
+
+def test_the_code_hash_ignores_line_endings() -> None:
+    sources = agent_sources()
+    crlf = {name: text.replace("\n", "\r\n") for name, text in sources.items()}
+
+    assert suite.code_hash(crlf) == suite.code_hash(sources)
+
+
+def test_the_agent_modules_are_graph_and_everything_it_imports() -> None:
+    """A module the agent starts to import must join AGENT_MODULES, or edits to it would
+    leave the saved outputs looking current."""
+    package = ROOT / "src" / "issue_triager"
+
+    def imports(module: str) -> set[str]:
+        tree = ast.parse((package / f"{module}.py").read_text(encoding="utf-8"))
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            names = (
+                [node.module or ""] if isinstance(node, ast.ImportFrom)
+                else [a.name for a in node.names] if isinstance(node, ast.Import)
+                else []
+            )  # fmt: skip
+            found |= {n.split(".")[1] for n in names if n.startswith("issue_triager.")}
+        return found
+
+    reached, todo = set[str](), ["graph"]
+    while todo:
+        module = todo.pop()
+        if module not in reached:
+            reached.add(module)
+            todo += imports(module)
+
+    assert sorted(reached) == sorted(suite.AGENT_MODULES)
+
+
 def test_a_missing_rules_file_hashes_as_null(tmp_path: Path) -> None:
     folder = copy_dataset(tmp_path)
     (folder / "rules.yaml").unlink()
@@ -151,7 +211,10 @@ def comment() -> FakeModel:
 
 
 def given(case_id: str = "19", **changes: Any) -> dict[str, Any]:
-    return suite.case_input(DATA.by_id[case_id], SPEC, suite.dataset_hash(DATA)) | changes
+    return (
+        suite.case_input(DATA.by_id[case_id], SPEC, suite.dataset_hash(DATA), suite.code_hash())
+        | changes
+    )
 
 
 @dataclass
@@ -258,8 +321,10 @@ def test_a_failed_validation_is_an_answer(calls: Calls) -> None:
         ({"title": "Another title"}, "title"),
         ({"body": "Another body"}, "body"),
         ({"model": None}, "model"),
+        ({"code": "000000000000"}, "agent code"),
+        ({"code": None}, "code"),
     ],
-    ids=["hash", "unknown-id", "title", "body", "no-model"],
+    ids=["hash", "unknown-id", "title", "body", "no-model", "code-hash", "no-code"],
 )
 def test_triage_refuses_a_case_written_for_another_dataset(
     calls: Calls, changes: dict[str, Any], message: str
@@ -368,7 +433,7 @@ def test_every_selected_input_round_trips_through_a_case_file() -> None:
     for selected in chosen.cases:
         case = load(files[f"{selected.id}.yaml"])
         assert case["input"] == suite.case_input(
-            DATA.by_id[selected.id], chosen.model, suite.dataset_hash(DATA)
+            DATA.by_id[selected.id], chosen.model, suite.dataset_hash(DATA), suite.code_hash()
         )
 
 

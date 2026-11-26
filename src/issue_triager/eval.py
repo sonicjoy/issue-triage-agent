@@ -8,6 +8,9 @@
   (`triager suite`), so the dataset stays the only copy of every truth.
 - `dataset_hash` is in every case's input: a hash of everything the agent can see besides
   the issue itself. A change to it makes every saved output stale.
+- `code_hash` is in every case's input too: a hash of the agent's own code (AFR #19). A
+  change to it makes every saved output stale, so CI's keyless `afr eval grade` fails until
+  the suite is run again.
 
 Run from the repo root: `uv run afr eval run --suite triager`. See the README.
 """
@@ -15,6 +18,7 @@ Run from the repo root: `uv run afr eval run --suite triager`. See the README.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import tempfile
 import time
@@ -42,6 +46,9 @@ AGENT = "issue_triager.eval:triage"
 SELECTION = Path("evals/selection.yaml")
 SUITE_DIR = Path("evals/cases/triager")
 SUITE_FILE = "suite.yaml"
+AGENT_MODULES = ("apply", "dataset", "decision", "graph", "prompts", "search", "tools")
+"""The package modules the agent runs: `graph` and every module it imports, directly or not.
+A test keeps this list in step with the imports."""
 WAITS = (15, 30)  # seconds before each retry of a transient provider error
 SLEEP = time.sleep  # tests replace it
 NO_DECISION = "(no decision)"
@@ -72,13 +79,27 @@ def dataset_hash(data: Dataset) -> str:
     return hashlib.sha256(canonical(seen).encode("utf-8")).hexdigest()[:12]
 
 
+def code_hash(sources: dict[str, str] | None = None) -> str:
+    """A hash of the agent's code: the source of each of AGENT_MODULES, and of `_run_once`,
+    which builds the models and runs the graph. Line endings don't count; anything else does,
+    comments included, so any edit to them needs a live run. `sources` (name to text) is for
+    tests; by default the installed files are read."""
+    if sources is None:
+        package = Path(__file__).parent
+        sources = {m: (package / f"{m}.py").read_text(encoding="utf-8") for m in AGENT_MODULES}
+        sources["eval._run_once"] = inspect.getsource(_run_once)
+    normal = {name: text.replace("\r\n", "\n") for name, text in sources.items()}
+    return hashlib.sha256(canonical(normal).encode("utf-8")).hexdigest()[:12]
+
+
 def _id(case: TriageCase) -> str:
     return case.id
 
 
-def case_input(case: TriageCase, model: str, digest: str) -> dict[str, Any]:
-    """A case's input: what the agent is given, the model to run, and the dataset hash."""
-    return {**case.agent_input().model_dump(), "model": model, "dataset": digest}
+def case_input(case: TriageCase, model: str, digest: str, code: str) -> dict[str, Any]:
+    """A case's input: what the agent is given, the model to run, the dataset hash and the
+    code hash."""
+    return {**case.agent_input().model_dump(), "model": model, "dataset": digest, "code": code}
 
 
 # ---- the adapter -------------------------------------------------------------------
@@ -88,7 +109,8 @@ def case_input(case: TriageCase, model: str, digest: str) -> dict[str, Any]:
 def triage(input: dict[str, Any]) -> dict[str, Any]:
     """Triage one case and return its graded fields plus a `meta` graded only by `extra_checks`.
 
-    Raises when the case was written for another dataset (hash, id, title or body differ),
+    Raises when the case was written for another dataset (hash, id, title or body differ)
+    or for other agent code (the code hash differs),
     or when the model can't run (no key, a provider error that outlasts the retries). A
     decision that still breaks the rules after the agent's retry is returned, with
     `meta.status: "failed"`: it's a wrong answer, not an error. With no decision at all,
@@ -119,12 +141,17 @@ def triage(input: dict[str, Any]) -> dict[str, Any]:
 
 
 def _case_for(input: dict[str, Any], data: Dataset) -> TriageCase:
-    for key in ("id", "title", "body", "model", "dataset"):
+    for key in ("id", "title", "body", "model", "dataset", "code"):
         if not isinstance(input.get(key), str):
             raise ValueError(f"the input's {key!r} must be text")
     if input["dataset"] != (digest := dataset_hash(data)):
         raise ValueError(
             f"the case was written for dataset {input['dataset']}, but this one is {digest}: "
+            "regenerate the suite (`uv run triager suite`) and run it again"
+        )
+    if input["code"] != (code := code_hash()):
+        raise ValueError(
+            f"the case was written for agent code {input['code']}, but this code is {code}: "
             "regenerate the suite (`uv run triager suite`) and run it again"
         )
     case = data.by_id.get(input["id"])
@@ -245,7 +272,7 @@ def build_suite(data: Dataset, selection: Selection) -> dict[str, str]:
     """The suite's files, name to text: `suite.yaml` and one `<id>.yaml` per selected case,
     each with its truth checks then the entry's `extra_checks`.
     Raises ValueError for an id that isn't in the dataset or can't be a case file name."""
-    digest = dataset_hash(data)
+    digest, code = dataset_hash(data), code_hash()
     files = {SUITE_FILE: dump({"agent": AGENT, "model": selection.model})}
     for selected in selection.cases:
         case = data.by_id.get(selected.id)
@@ -256,7 +283,7 @@ def build_suite(data: Dataset, selection: Selection) -> dict[str, str]:
             "id": case.id,
             "tags": list(selected.tags),
             "note": selected.note,
-            "input": case_input(case, selection.model, digest),
+            "input": case_input(case, selection.model, digest, code),
             "checks": [*checks_for(case), *(c.model_dump() for c in selected.extra_checks)],
         })  # fmt: skip
     return files
