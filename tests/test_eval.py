@@ -116,21 +116,18 @@ def test_the_hash_ignores_line_endings(tmp_path: Path) -> None:
 # ---- the code hash (AFR #19) ------------------------------------------------------
 
 
+PACKAGE = ROOT / "src" / "issue_triager"
+
+
 def agent_sources() -> dict[str, str]:
-    package = ROOT / "src" / "issue_triager"
-    found = {m: (package / f"{m}.py").read_text(encoding="utf-8") for m in suite.AGENT_MODULES}
-    tree = ast.parse((package / "eval.py").read_text(encoding="utf-8"))
-    run_once = next(n for n in tree.body if getattr(n, "name", None) == "_run_once")
-    lines = (package / "eval.py").read_text(encoding="utf-8").splitlines(keepends=True)
-    found["eval._run_once"] = "".join(lines[run_once.lineno - 1 : run_once.end_lineno])
-    return found
+    return {m: (PACKAGE / f"{m}.py").read_text(encoding="utf-8") for m in suite.AGENT_MODULES}
 
 
-def test_the_code_hash_reads_the_agent_modules_and_run_once() -> None:
+def test_the_code_hash_reads_the_agent_modules() -> None:
     assert suite.code_hash() == suite.code_hash(agent_sources())
 
 
-@pytest.mark.parametrize("name", [*suite.AGENT_MODULES, "eval._run_once"])
+@pytest.mark.parametrize("name", suite.AGENT_MODULES)
 def test_any_edit_to_the_agent_code_changes_the_hash(name: str) -> None:
     sources = agent_sources()
     edited = sources | {name: sources[name] + "# an edit\n"}
@@ -145,31 +142,59 @@ def test_the_code_hash_ignores_line_endings() -> None:
     assert suite.code_hash(crlf) == suite.code_hash(sources)
 
 
-def test_the_agent_modules_are_graph_and_everything_it_imports() -> None:
-    """A module the agent starts to import must join AGENT_MODULES, or edits to it would
+def package_imports(source: str) -> set[str]:
+    """The issue_triager modules a module's source imports, in any form."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level:  # from . import x, from .x import y
+            names = [f"issue_triager.{node.module or a.name}" for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module == "issue_triager":
+            names = [f"issue_triager.{a.name}" for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        else:
+            continue
+        found |= {n.split(".")[1] for n in names if n.startswith("issue_triager.")}
+    return found
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from issue_triager.grading import normal",
+        "from issue_triager import grading",
+        "from . import grading",
+        "from .grading import normal",
+        "import issue_triager.grading",
+    ],
+)
+def test_every_import_form_is_seen(line: str) -> None:
+    assert package_imports(line) == {"grading"}
+
+
+def test_the_agent_modules_are_the_adapter_and_everything_it_imports() -> None:
+    """A module the adapter starts to import must join AGENT_MODULES, or edits to it would
     leave the saved outputs looking current."""
-    package = ROOT / "src" / "issue_triager"
-
-    def imports(module: str) -> set[str]:
-        tree = ast.parse((package / f"{module}.py").read_text(encoding="utf-8"))
-        found: set[str] = set()
-        for node in ast.walk(tree):
-            names = (
-                [node.module or ""] if isinstance(node, ast.ImportFrom)
-                else [a.name for a in node.names] if isinstance(node, ast.Import)
-                else []
-            )  # fmt: skip
-            found |= {n.split(".")[1] for n in names if n.startswith("issue_triager.")}
-        return found
-
-    reached, todo = set[str](), ["graph"]
+    reached, todo = set[str](), ["eval"]
     while todo:
         module = todo.pop()
         if module not in reached:
             reached.add(module)
-            todo += imports(module)
+            todo += package_imports((PACKAGE / f"{module}.py").read_text(encoding="utf-8"))
 
     assert sorted(reached) == sorted(suite.AGENT_MODULES)
+    assert suite.AGENT.startswith("issue_triager.eval:")  # the walk starts at the adapter
+
+
+def test_no_saved_output_is_an_error() -> None:
+    """An error means the agent couldn't run, not that it answered wrongly: such a run must
+    never be the accepted one (the harness only refuses stale cases)."""
+    lines = (ROOT / "evals" / "cases" / "triager" / "outputs.jsonl").read_text(encoding="utf-8")
+    errors = [r["case"] for r in map(json.loads, lines.splitlines()[1:]) if r.get("error")]
+
+    assert errors == [], f"cases with an error in outputs.jsonl: {errors}"
 
 
 def test_a_missing_rules_file_hashes_as_null(tmp_path: Path) -> None:

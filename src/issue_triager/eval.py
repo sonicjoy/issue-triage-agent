@@ -8,9 +8,10 @@
   (`triager suite`), so the dataset stays the only copy of every truth.
 - `dataset_hash` is in every case's input: a hash of everything the agent can see besides
   the issue itself. A change to it makes every saved output stale.
-- `code_hash` is in every case's input too: a hash of the agent's own code (AFR #19). A
-  change to it makes every saved output stale, so CI's keyless `afr eval grade` fails until
-  the suite is run again.
+- `code_hash` is in every case's input too: a hash of the code between the input and the
+  saved output (AFR #19). After an edit to it, CI's tests fail until `triager suite` writes
+  the new hash into the cases; then `afr eval grade` finds every saved output stale and fails
+  until the suite is run again.
 
 Run from the repo root: `uv run afr eval run --suite triager`. See the README.
 """
@@ -18,7 +19,6 @@ Run from the repo root: `uv run afr eval run --suite triager`. See the README.
 from __future__ import annotations
 
 import hashlib
-import inspect
 import json
 import tempfile
 import time
@@ -46,9 +46,12 @@ AGENT = "issue_triager.eval:triage"
 SELECTION = Path("evals/selection.yaml")
 SUITE_DIR = Path("evals/cases/triager")
 SUITE_FILE = "suite.yaml"
-AGENT_MODULES = ("apply", "dataset", "decision", "graph", "prompts", "search", "tools")
-"""The package modules the agent runs: `graph` and every module it imports, directly or not.
-A test keeps this list in step with the imports."""
+AGENT_MODULES = (
+    "apply", "batch", "dataset", "decision", "eval", "grading", "graph", "prompts", "search",
+    "tools",
+)  # fmt: skip
+"""The package modules between a case's input and its saved output: this adapter module and
+every module it imports, directly or not. A test keeps this list in step with the imports."""
 WAITS = (15, 30)  # seconds before each retry of a transient provider error
 SLEEP = time.sleep  # tests replace it
 NO_DECISION = "(no decision)"
@@ -80,14 +83,14 @@ def dataset_hash(data: Dataset) -> str:
 
 
 def code_hash(sources: dict[str, str] | None = None) -> str:
-    """A hash of the agent's code: the source of each of AGENT_MODULES, and of `_run_once`,
-    which builds the models and runs the graph. Line endings don't count; anything else does,
-    comments included, so any edit to them needs a live run. `sources` (name to text) is for
-    tests; by default the installed files are read."""
+    """A hash of the code between a case's input and its saved output: the source of each of
+    AGENT_MODULES, this one included (the adapter, its normalising and its retries). Line
+    endings don't count; anything else does, comments and the generator included, so any edit
+    to these files needs a live run. `sources` (name to text) is for tests; by default the
+    installed files are read."""
     if sources is None:
         package = Path(__file__).parent
         sources = {m: (package / f"{m}.py").read_text(encoding="utf-8") for m in AGENT_MODULES}
-        sources["eval._run_once"] = inspect.getsource(_run_once)
     normal = {name: text.replace("\r\n", "\n") for name, text in sources.items()}
     return hashlib.sha256(canonical(normal).encode("utf-8")).hexdigest()[:12]
 
