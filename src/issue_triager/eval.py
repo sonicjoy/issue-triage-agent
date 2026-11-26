@@ -47,11 +47,12 @@ SELECTION = Path("evals/selection.yaml")
 SUITE_DIR = Path("evals/cases/triager")
 SUITE_FILE = "suite.yaml"
 AGENT_MODULES = (
-    "apply", "batch", "dataset", "decision", "eval", "grading", "graph", "prompts", "search",
-    "tools",
+    "__init__", "apply", "batch", "dataset", "decision", "eval", "grading", "graph", "prompts",
+    "search", "tools",
 )  # fmt: skip
-"""The package modules between a case's input and its saved output: this adapter module and
-every module it imports, directly or not. A test keeps this list in step with the imports."""
+"""The package modules between a case's input and its saved output: the package's
+`__init__` (run by every import), this adapter module and every module it imports, directly
+or not. A test keeps this list in step with the imports."""
 WAITS = (15, 30)  # seconds before each retry of a transient provider error
 SLEEP = time.sleep  # tests replace it
 NO_DECISION = "(no decision)"

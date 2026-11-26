@@ -177,7 +177,7 @@ def test_every_import_form_is_seen(line: str) -> None:
 def test_the_agent_modules_are_the_adapter_and_everything_it_imports() -> None:
     """A module the adapter starts to import must join AGENT_MODULES, or edits to it would
     leave the saved outputs looking current."""
-    reached, todo = set[str](), ["eval"]
+    reached, todo = {"__init__"}, ["eval"]  # __init__ runs on every import of the package
     while todo:
         module = todo.pop()
         if module not in reached:
@@ -186,6 +186,14 @@ def test_the_agent_modules_are_the_adapter_and_everything_it_imports() -> None:
 
     assert sorted(reached) == sorted(suite.AGENT_MODULES)
     assert suite.AGENT.startswith("issue_triager.eval:")  # the walk starts at the adapter
+
+
+def test_the_saved_outputs_came_from_the_suites_agent() -> None:
+    """`afr eval run --agent` can run another function; afr only warns, so it is refused here."""
+    header = (ROOT / "evals" / "cases" / "triager" / "outputs.jsonl").read_text(encoding="utf-8")
+    run = json.loads(header.splitlines()[0])["run"]
+
+    assert (run["agent"], run["model"]) == (suite.AGENT, SPEC)
 
 
 def test_no_saved_output_is_an_error() -> None:
