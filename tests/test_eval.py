@@ -5,6 +5,8 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -177,7 +179,7 @@ def test_every_import_form_is_seen(line: str) -> None:
 def test_the_agent_modules_are_the_adapter_and_everything_it_imports() -> None:
     """A module the adapter starts to import must join AGENT_MODULES, or edits to it would
     leave the saved outputs looking current."""
-    reached, todo = {"__init__"}, ["eval"]  # __init__ runs on every import of the package
+    reached, todo = set[str](), ["__init__", "eval"]  # __init__ runs on every package import
     while todo:
         module = todo.pop()
         if module not in reached:
@@ -188,12 +190,29 @@ def test_the_agent_modules_are_the_adapter_and_everything_it_imports() -> None:
     assert suite.AGENT.startswith("issue_triager.eval:")  # the walk starts at the adapter
 
 
+def test_every_package_module_loaded_with_the_adapter_is_hashed() -> None:
+    """The same rule, checked by Python itself in a fresh process: whatever importing the
+    adapter loads, by any import form or from `__init__`, must be in AGENT_MODULES. (A module
+    imported later, inside a function, is the walk's job above.)"""
+    script = (
+        "import sys, issue_triager.eval;"
+        "print(' '.join(sorted(m for m in sys.modules if m.startswith('issue_triager.'))))"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                          check=True, cwd=ROOT)  # fmt: skip
+    loaded = {name.split(".")[1] for name in done.stdout.split()}
+
+    assert loaded <= set(suite.AGENT_MODULES), loaded - set(suite.AGENT_MODULES)
+
+
 def test_the_saved_outputs_came_from_the_suites_agent() -> None:
     """`afr eval run --agent` can run another function; afr only warns, so it is refused here."""
     header = (ROOT / "evals" / "cases" / "triager" / "outputs.jsonl").read_text(encoding="utf-8")
     run = json.loads(header.splitlines()[0])["run"]
 
-    assert (run["agent"], run["model"]) == (suite.AGENT, SPEC)
+    committed = yaml.safe_load((ROOT / "evals" / "cases" / "triager" / "suite.yaml").read_text())
+
+    assert (run["agent"], run["model"]) == (suite.AGENT, committed["model"])
 
 
 def test_no_saved_output_is_an_error() -> None:
