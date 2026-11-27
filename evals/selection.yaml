@@ -12,7 +12,7 @@
 #
 # Changing the model makes every case stale: it needs a live run and a new baseline.
 
-model: openai:gpt-5.4-mini
+model: openai:gpt-6-luna
 
 cases:
   - id: s47

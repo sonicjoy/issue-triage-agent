@@ -35,7 +35,7 @@ from issue_triager.tools import summarise
 
 ROOT = Path(__file__).parents[1]
 DATA = load_dataset()
-SPEC = "openai:gpt-5.4-mini"
+SPEC = "openai:gpt-6-luna"
 
 
 def copy_dataset(tmp_path: Path) -> Path:
