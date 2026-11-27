@@ -1,2 +1,2 @@
 agent: issue_triager.eval:triage
-model: openai:gpt-5.4-mini
+model: openai:gpt-6-luna

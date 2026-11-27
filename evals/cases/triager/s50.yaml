@@ -7,7 +7,7 @@ input:
   title: Slack bot that posts failed runs
   body: |
     Post a message to a Slack channel whenever a run fails, with a link to replay it.
-  model: openai:gpt-5.4-mini
+  model: openai:gpt-6-luna
   dataset: f66daf3de203
   code: 37c201d40896
 checks:

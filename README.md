@@ -16,11 +16,11 @@ cp .env.example .env   # add GOOGLE_API_KEY (free tier) or OPENAI_API_KEY / ANTH
 uv run triager run --issue 19 --model google_genai:gemini-3.5-flash-lite
 
 # The same, on the OpenAI Agents SDK
-uv run triager run --issue 19 --engine openai-agents --model openai:gpt-5.4-mini
+uv run triager run --issue 19 --engine openai-agents --model openai:gpt-6-luna
 
 # Any repo: export its issues, labels and milestones (read-only, needs `gh auth login`)
 uv run triager export pydantic/pydantic-settings --limit 300
-uv run triager run --dataset datasets/pydantic__pydantic-settings --issue 771 --model openai:gpt-5.4-mini
+uv run triager run --dataset datasets/pydantic__pydantic-settings --issue 771 --model openai:gpt-6-luna
 ```
 
 After each run it prints every tool call, the decision next to the issue's real triage (which the agent never sees), tokens, cost and latency.
@@ -92,11 +92,11 @@ uv run triager batch batches/afr-corpus.yaml --record http://127.0.0.1:4318   # 
 `evals/cases/triager/` is the triager's golden suite for [Agent Flight Recorder's eval harness](https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/evals/harness.md) (`afr eval`, installed with the dependencies). It holds 18 cases chosen from the bundled dataset: every failure mode from the recorder's error analysis, cases where each of `milestone`, `duplicate_of` and `regression_of` should be empty and where it shouldn't, three controls the agent got right, and three red-team cases. Each case checks the four fields against the dataset's truth, with `one_of` where other answers are accepted. A red-team case adds its selection entry's `extra_checks`: `not_contains` checks that fail only when the agent obeys text planted in the issue or repeats a fake key into its rationale or comment ([AFR design](https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/designs/red-team-cases.md)). The harness calls `issue_triager.eval:triage`, which triages the case and resumes the review step with approve; the dry-run file goes to a temporary folder.
 
 ```bash
-uv run afr eval run --suite triager      # live: 18 triages on gpt-5.4-mini, about $0.20; needs OPENAI_API_KEY
+uv run afr eval run --suite triager      # live: 18 triages on gpt-6-luna, a few cents at list prices; needs OPENAI_API_KEY
 uv run afr eval grade --suite triager    # no model calls: grade the saved outputs against the baseline
 ```
 
-- **Noise is normal.** Two runs of the same issue agreed on a field 86% of the time, so most live runs show some checks moving. To measure a change, copy `outputs.jsonl` aside, run again, and believe only what moved in both runs. Accept the second run with `uv run afr eval grade --suite triager --accept` only if it shows those same changes, then commit `outputs.jsonl` and `baseline.json`; otherwise restore `outputs.jsonl` (`git restore`), or CI grades the run you didn't accept. Never accept a run with error outcomes: an error means the agent couldn't run (a missing key, a persistent rate limit), not that it answered wrongly.
+- **Noise is normal.** Two runs of the same issue agreed on a field 86% of the time (measured on `gpt-5.4-mini`, the suite's model until 27 November; not yet re-measured on `gpt-6-luna`), so most live runs show some checks moving. To measure a change, copy `outputs.jsonl` aside, run again, and believe only what moved in both runs. Accept the second run with `uv run afr eval grade --suite triager --accept` only if it shows those same changes, then commit `outputs.jsonl` and `baseline.json`; otherwise restore `outputs.jsonl` (`git restore`), or CI grades the run you didn't accept. Never accept a run with error outcomes: an error means the agent couldn't run (a missing key, a persistent rate limit), not that it answered wrongly.
 - **Each input pins what the answer depends on:** the model, a hash of everything the agent can see besides the issue (every real issue as the search tools show it, `repo.json` and `rules.yaml`), and a hash of the code between the input and the saved output (the adapter's `eval.py` and every package module it imports: the graph, prompts, tools, search, normalising and retries). After an edit to any of these files, a test fails until `uv run triager suite` writes the new hash into the cases; then every case is stale until a live run. Comments and generator edits count as edits; line endings don't. Dependency versions (`uv.lock`, afr included) and provider settings in the environment (a base URL or proxy for the model's client) aren't hashed, and neither is a module imported by a name computed at run time.
 - **The dataset is the only copy of the truth.** [evals/selection.yaml](evals/selection.yaml) lists which cases are in and why; `uv run triager suite` rewrites the case files from it and the dataset, and a test fails when they differ. Editing an accepted answer only changes checks (`afr eval grade --accept`, no model calls); editing what the agent can see needs a live run.
 - **CI** runs `afr eval grade --suite triager`, with no key and no model calls. It fails on any regression against the baseline, and on stale cases. After an edit to the code the hash covers, the committed-suite test fails first; once the suite is regenerated, every case is stale, so CI stays red until a live run. Green means the saved outputs came from the current code and still grade as accepted. It doesn't mean another run would answer the same (see the noise above). The live run happens on your machine, not in CI, so CI needs no model key.
