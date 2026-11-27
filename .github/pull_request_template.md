@@ -25,3 +25,4 @@ output
 - [ ] Docs updated (README, `docs/`, `.env.example`) if behaviour or settings changed
 - [ ] `uv run pre-commit run --all-files` passes
 - [ ] Evidence above is real output from this branch
+- [ ] If `evals/cases/**` changed: the live run measured what the PR claims (noise: see the README), and the commit message lists the state changes it accepted

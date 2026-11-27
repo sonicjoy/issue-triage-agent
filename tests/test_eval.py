@@ -1,9 +1,12 @@
 """The eval suite's adapter, dataset hash and generator (AFR #16)."""
 
+import ast
 import hashlib
 import json
 import re
 import shutil
+import subprocess
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -112,6 +115,115 @@ def test_the_hash_ignores_line_endings(tmp_path: Path) -> None:
     assert suite.dataset_hash(load_dataset(folder)) == suite.dataset_hash(DATA)
 
 
+# ---- the code hash (AFR #19) ------------------------------------------------------
+
+
+PACKAGE = ROOT / "src" / "issue_triager"
+
+
+def agent_sources() -> dict[str, str]:
+    return {m: (PACKAGE / f"{m}.py").read_text(encoding="utf-8") for m in suite.AGENT_MODULES}
+
+
+def test_the_code_hash_reads_the_agent_modules() -> None:
+    assert suite.code_hash() == suite.code_hash(agent_sources())
+
+
+@pytest.mark.parametrize("name", suite.AGENT_MODULES)
+def test_any_edit_to_the_agent_code_changes_the_hash(name: str) -> None:
+    sources = agent_sources()
+    edited = sources | {name: sources[name] + "# an edit\n"}
+
+    assert suite.code_hash(edited) != suite.code_hash(sources)
+
+
+def test_the_code_hash_ignores_line_endings() -> None:
+    sources = agent_sources()
+    crlf = {name: text.replace("\n", "\r\n") for name, text in sources.items()}
+
+    assert suite.code_hash(crlf) == suite.code_hash(sources)
+
+
+def package_imports(source: str) -> set[str]:
+    """The issue_triager modules a module's source imports, in any form."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level:  # from . import x, from .x import y
+            names = [f"issue_triager.{node.module or a.name}" for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module == "issue_triager":
+            names = [f"issue_triager.{a.name}" for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        else:
+            continue
+        found |= {n.split(".")[1] for n in names if n.startswith("issue_triager.")}
+    return found
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "from issue_triager.grading import normal",
+        "from issue_triager import grading",
+        "from . import grading",
+        "from .grading import normal",
+        "import issue_triager.grading",
+    ],
+)
+def test_every_import_form_is_seen(line: str) -> None:
+    assert package_imports(line) == {"grading"}
+
+
+def test_the_agent_modules_are_the_adapter_and_everything_it_imports() -> None:
+    """A module the adapter starts to import must join AGENT_MODULES, or edits to it would
+    leave the saved outputs looking current."""
+    reached, todo = set[str](), ["__init__", "eval"]  # __init__ runs on every package import
+    while todo:
+        module = todo.pop()
+        if module not in reached:
+            reached.add(module)
+            todo += package_imports((PACKAGE / f"{module}.py").read_text(encoding="utf-8"))
+
+    assert sorted(reached) == sorted(suite.AGENT_MODULES)
+    assert suite.AGENT.startswith("issue_triager.eval:")  # the walk starts at the adapter
+
+
+def test_every_package_module_loaded_with_the_adapter_is_hashed() -> None:
+    """The same rule, checked by Python itself in a fresh process: whatever importing the
+    adapter loads, by any import form or from `__init__`, must be in AGENT_MODULES. (A module
+    imported later, inside a function, is the walk's job above.)"""
+    script = (
+        "import sys, issue_triager.eval;"
+        "print(' '.join(sorted(m for m in sys.modules if m.startswith('issue_triager.'))))"
+    )
+    done = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                          check=True, cwd=ROOT)  # fmt: skip
+    loaded = {name.split(".")[1] for name in done.stdout.split()}
+
+    assert loaded <= set(suite.AGENT_MODULES), loaded - set(suite.AGENT_MODULES)
+
+
+def test_the_saved_outputs_came_from_the_suites_agent() -> None:
+    """`afr eval run --agent` can run another function; afr only warns, so it is refused here."""
+    header = (ROOT / "evals" / "cases" / "triager" / "outputs.jsonl").read_text(encoding="utf-8")
+    run = json.loads(header.splitlines()[0])["run"]
+
+    committed = yaml.safe_load((ROOT / "evals" / "cases" / "triager" / "suite.yaml").read_text())
+
+    assert (run["agent"], run["model"]) == (suite.AGENT, committed["model"])
+
+
+def test_no_saved_output_is_an_error() -> None:
+    """An error means the agent couldn't run, not that it answered wrongly: such a run must
+    never be the accepted one (the harness only refuses stale cases)."""
+    lines = (ROOT / "evals" / "cases" / "triager" / "outputs.jsonl").read_text(encoding="utf-8")
+    errors = [r["case"] for r in map(json.loads, lines.splitlines()[1:]) if r.get("error")]
+
+    assert errors == [], f"cases with an error in outputs.jsonl: {errors}"
+
+
 def test_a_missing_rules_file_hashes_as_null(tmp_path: Path) -> None:
     folder = copy_dataset(tmp_path)
     (folder / "rules.yaml").unlink()
@@ -151,7 +263,10 @@ def comment() -> FakeModel:
 
 
 def given(case_id: str = "19", **changes: Any) -> dict[str, Any]:
-    return suite.case_input(DATA.by_id[case_id], SPEC, suite.dataset_hash(DATA)) | changes
+    return (
+        suite.case_input(DATA.by_id[case_id], SPEC, suite.dataset_hash(DATA), suite.code_hash())
+        | changes
+    )
 
 
 @dataclass
@@ -258,8 +373,10 @@ def test_a_failed_validation_is_an_answer(calls: Calls) -> None:
         ({"title": "Another title"}, "title"),
         ({"body": "Another body"}, "body"),
         ({"model": None}, "model"),
+        ({"code": "000000000000"}, "agent code"),
+        ({"code": None}, "code"),
     ],
-    ids=["hash", "unknown-id", "title", "body", "no-model"],
+    ids=["hash", "unknown-id", "title", "body", "no-model", "code-hash", "no-code"],
 )
 def test_triage_refuses_a_case_written_for_another_dataset(
     calls: Calls, changes: dict[str, Any], message: str
@@ -368,7 +485,7 @@ def test_every_selected_input_round_trips_through_a_case_file() -> None:
     for selected in chosen.cases:
         case = load(files[f"{selected.id}.yaml"])
         assert case["input"] == suite.case_input(
-            DATA.by_id[selected.id], chosen.model, suite.dataset_hash(DATA)
+            DATA.by_id[selected.id], chosen.model, suite.dataset_hash(DATA), suite.code_hash()
         )
 
 

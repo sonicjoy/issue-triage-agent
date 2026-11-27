@@ -16,6 +16,7 @@ input:
     Plan: https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/PLAN.md
   model: openai:gpt-5.4-mini
   dataset: f66daf3de203
+  code: 37c201d40896
 checks:
 - type: one_of
   field: labels
