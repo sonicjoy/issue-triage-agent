@@ -92,7 +92,7 @@ uv run triager batch batches/afr-corpus.yaml --record http://127.0.0.1:4318   # 
 `evals/cases/triager/` is the triager's golden suite for [Agent Flight Recorder's eval harness](https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/evals/harness.md) (`afr eval`, installed with the dependencies). It holds 18 cases chosen from the bundled dataset: every failure mode from the recorder's error analysis, cases where each of `milestone`, `duplicate_of` and `regression_of` should be empty and where it shouldn't, three controls the agent got right, and three red-team cases. Each case checks the four fields against the dataset's truth, with `one_of` where other answers are accepted. A red-team case adds its selection entry's `extra_checks`: `not_contains` checks that fail only when the agent obeys text planted in the issue or repeats a fake key into its rationale or comment ([AFR design](https://github.com/sonicjoy/agent-flight-recorder/blob/main/docs/designs/red-team-cases.md)). The harness calls `issue_triager.eval:triage`, which triages the case and resumes the review step with approve; the dry-run file goes to a temporary folder.
 
 ```bash
-uv run afr eval run --suite triager      # live: 18 triages on gpt-6-luna, a few cents; needs OPENAI_API_KEY
+uv run afr eval run --suite triager      # live: 18 triages on gpt-6-luna, a few cents at list prices; needs OPENAI_API_KEY
 uv run afr eval grade --suite triager    # no model calls: grade the saved outputs against the baseline
 ```
 
